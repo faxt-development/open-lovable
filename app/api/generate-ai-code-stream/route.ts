@@ -4,6 +4,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText } from 'ai';
+import { bedrockClient, BEDROCK_MODELS } from '@/lib/aws-bedrock';
 import type { SandboxState } from '@/types/sandbox';
 import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
 import { executeSearchPlan, formatSearchResultsForAI, selectTargetFile } from '@/lib/file-search-executor';
@@ -11,6 +12,7 @@ import { FileManifest } from '@/types/file-manifest';
 import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 
+// Initialize model providers
 const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
 });
@@ -27,6 +29,34 @@ const googleGenerativeAI = createGoogleGenerativeAI({
 const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Model mapping for different providers
+const MODEL_MAPPING: Record<string, { provider: string; modelId: string }> = {
+  // OpenAI
+  'openai/gpt-4': { provider: 'openai', modelId: 'gpt-4' },
+  'openai/gpt-4-turbo': { provider: 'openai', modelId: 'gpt-4-turbo-preview' },
+  'openai/gpt-3.5-turbo': { provider: 'openai', modelId: 'gpt-3.5-turbo' },
+  
+  // Anthropic
+  'anthropic/claude-3-opus': { provider: 'anthropic', modelId: 'claude-3-opus-20240229' },
+  'anthropic/claude-3-sonnet': { provider: 'anthropic', modelId: 'claude-3-sonnet-20240229' },
+  'anthropic/claude-3-haiku': { provider: 'anthropic', modelId: 'claude-3-haiku-20240307' },
+  
+  // Groq
+  'groq/llama3-70b': { provider: 'groq', modelId: 'llama3-70b-8192' },
+  'groq/llama3-8b': { provider: 'groq', modelId: 'llama3-8b-8192' },
+  'groq/mixtral-8x7b': { provider: 'groq', modelId: 'mixtral-8x7b-32768' },
+  
+  // Google
+  'google/gemini-pro': { provider: 'google', modelId: 'gemini-pro' },
+  
+  // AWS Bedrock
+  'bedrock/claude-3-sonnet': { provider: 'bedrock', modelId: 'anthropic.claude-3-sonnet-20240229-v1:0' },
+  'bedrock/claude-3-haiku': { provider: 'bedrock', modelId: 'anthropic.claude-3-haiku-20240307-v1:0' },
+  'bedrock/claude-2': { provider: 'bedrock', modelId: 'anthropic.claude-v2' },
+  'bedrock/titan-text-lite': { provider: 'bedrock', modelId: 'amazon.titan-text-lite-v1' },
+  'bedrock/titan-text-express': { provider: 'bedrock', modelId: 'amazon.titan-text-express-v1' },
+};
 
 // Helper function to analyze user preferences from conversation history
 function analyzeUserPreferences(messages: ConversationMessage[]): {
@@ -72,11 +102,49 @@ declare global {
   var conversationState: ConversationState | null;
 }
 
+// Helper function to get the appropriate model provider
+function getModelProvider(modelId: string) {
+  const modelConfig = MODEL_MAPPING[modelId];
+  if (!modelConfig) {
+    throw new Error(`Unsupported model: ${modelId}`);
+  }
+
+  switch (modelConfig.provider) {
+    case 'openai':
+      return openai(modelConfig.modelId);
+    case 'anthropic':
+      return anthropic(modelConfig.modelId);
+    case 'groq':
+      return groq(modelConfig.modelId);
+    case 'google':
+      return googleGenerativeAI(modelConfig.modelId);
+    case 'bedrock':
+      return {
+        async *streamText(options: any) {
+          const stream = bedrockClient.streamText({
+            modelId: modelConfig.modelId,
+            messages: options.messages,
+            maxTokens: options.maxTokens,
+            temperature: options.temperature,
+            topP: options.topP,
+          });
+
+          for await (const chunk of stream) {
+            yield { text: chunk.text };
+          }
+        }
+      };
+    default:
+      throw new Error(`Unsupported provider: ${modelConfig.provider}`);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false } = await request.json();
+    const { prompt, model = 'openai/gpt-4-turbo', context, isEdit = false } = await request.json();
     
     console.log('[generate-ai-code-stream] Received request:');
+    console.log('[generate-ai-code-stream] - model:', model);
     console.log('[generate-ai-code-stream] - prompt:', prompt);
     console.log('[generate-ai-code-stream] - isEdit:', isEdit);
     console.log('[generate-ai-code-stream] - context.sandboxId:', context?.sandboxId);
@@ -1151,18 +1219,20 @@ CRITICAL: When files are provided in the context:
         // Track packages that need to be installed
         const packagesToInstall: string[] = [];
         
-        // Determine which provider to use based on model
-        const isAnthropic = model.startsWith('anthropic/');
-        const isGoogle = model.startsWith('google/');
-        const isOpenAI = model.startsWith('openai/gpt-5');
-        const modelProvider = isAnthropic ? anthropic : (isOpenAI ? openai : (isGoogle ? googleGenerativeAI : groq));
-        const actualModel = isAnthropic ? model.replace('anthropic/', '') : 
-                           (model === 'openai/gpt-5') ? 'gpt-5' :
-                           (isGoogle ? model.replace('google/', '') : model);
-
-        // Make streaming API call with appropriate provider
+        // Get the appropriate model provider
+        let modelInstance;
+        try {
+          modelInstance = getModelProvider(model);
+        } catch (error) {
+          console.error(`[generate-ai-code-stream] Error getting model provider:`, error);
+          return NextResponse.json(
+            { error: `Error initializing model provider: ${error instanceof Error ? error.message : String(error)}` },
+            { status: 400 }
+          );
+        }
+        
         const streamOptions: any = {
-          model: modelProvider(actualModel),
+          model: modelInstance,
           messages: [
             { 
               role: 'system', 

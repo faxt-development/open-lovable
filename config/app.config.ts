@@ -35,7 +35,11 @@ export const appConfig = {
       'openai/gpt-5',
       'moonshotai/kimi-k2-instruct',
       'anthropic/claude-sonnet-4-20250514',
-      'google/gemini-2.5-pro'
+      'google/gemini-2.5-pro',
+      'bedrock/claude-3-sonnet',
+      'bedrock/claude-3-haiku',
+      'bedrock/claude-2',
+      'bedrock/titan-text-express'
     ],
     
     // Model display names
@@ -43,7 +47,11 @@ export const appConfig = {
       'openai/gpt-5': 'GPT-5',
       'moonshotai/kimi-k2-instruct': 'Kimi K2 Instruct',
       'anthropic/claude-sonnet-4-20250514': 'Sonnet 4',
-      'google/gemini-2.5-pro': 'Gemini 2.5 Pro'
+      'google/gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'bedrock/claude-3-sonnet': 'Bedrock: Claude 3 Sonnet',
+      'bedrock/claude-3-haiku': 'Bedrock: Claude 3 Haiku',
+      'bedrock/claude-2': 'Bedrock: Claude 2',
+      'bedrock/titan-text-express': 'Bedrock: Titan Text Express'
     },
     
     // Temperature settings for non-reasoning models

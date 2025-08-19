@@ -26,7 +26,25 @@ ANTHROPIC_API_KEY=your_anthropic_api_key  # Get from https://console.anthropic.c
 OPENAI_API_KEY=your_openai_api_key  # Get from https://platform.openai.com (GPT-5)
 GEMINI_API_KEY=your_gemini_api_key  # Get from https://aistudio.google.com/app/apikey
 GROQ_API_KEY=your_groq_api_key  # Get from https://console.groq.com (Fast inference - Kimi K2 recommended)
+
+# AWS Bedrock Configuration (optional)
+AWS_ACCESS_KEY_ID=your_aws_access_key_id  # Get from AWS IAM Console
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key  # Get from AWS IAM Console
+AWS_REGION=us-east-1  # Change to your preferred AWS region
 ```
+
+### AWS Bedrock Setup
+
+1. **Enable Model Access**
+   - Go to [AWS Bedrock Console](https://console.aws.amazon.com/bedrock/)
+   - Navigate to "Model access" in the left sidebar
+   - Request access to the models you want to use (Claude 3, Titan, etc.)
+
+2. **Create IAM User**
+   - Go to [AWS IAM Console](https://console.aws.amazon.com/iam/)
+   - Create a new user with programmatic access
+   - Attach the `AmazonBedrockFullAccess` policy
+   - Save the access key ID and secret access key for your `.env` file
 
 3. **Run**
 ```bash
