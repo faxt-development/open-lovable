@@ -67,7 +67,7 @@ export default function LocalDevelopmentPage() {
   const [promptInput, setPromptInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
-      content: 'Welcome! I can help you generate code with full context of your sandbox files and structure. Just start chatting - I\'ll automatically create a sandbox for you if needed!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
+      content: 'Welcome! I can help you generate code with full context of your local project files and structure. Just start chatting and I\'ll help you build your application!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
       type: 'system',
       timestamp: new Date()
     }
@@ -102,7 +102,7 @@ export default function LocalDevelopmentPage() {
   const [isPreparingDesign, setIsPreparingDesign] = useState(false);
   const [targetUrl, setTargetUrl] = useState<string>('');
   const [loadingStage, setLoadingStage] = useState<'gathering' | 'planning' | 'generating' | null>(null);
-  const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
+  const [projectFiles, setProjectFiles] = useState<Record<string, string>>({});
   const [fileStructure, setFileStructure] = useState<string>('');
   
   const [conversationContext, setConversationContext] = useState<{
@@ -302,13 +302,13 @@ export default function LocalDevelopmentPage() {
   };
   
   const checkAndInstallPackages = async () => {
-    if (!sandboxData) {
-      addChatMessage('No active sandbox. Create a sandbox first!', 'system');
+    if (!projectData) {
+      addChatMessage('No active project. Create a project first!', 'system');
       return;
     }
     
     // Vite error checking removed - handled by template setup
-    addChatMessage('Sandbox is ready. Vite configuration is handled by the template.', 'system');
+    addChatMessage('Project is ready. Vite configuration is handled by the template.', 'system');
   };
   
   const handleSurfaceError = (errors: any[]) => {
@@ -322,8 +322,8 @@ export default function LocalDevelopmentPage() {
   };
   
   const installPackages = async (packages: string[]) => {
-    if (!sandboxData) {
-      addChatMessage('No active sandbox. Create a sandbox first!', 'system');
+    if (!projectData) {
+      addChatMessage('No active project. Create a project first!', 'system');
       return;
     }
     
@@ -679,8 +679,8 @@ export default function LocalDevelopmentPage() {
             log(`  ${file}`, 'command');
           });
           
-          // Verify files were actually created by refreshing the sandbox if needed
-          if (sandboxData?.sandboxId && results.filesCreated.length > 0) {
+          // Verify files were actually created by refreshing the project if needed
+          if (projectData?.projectName && results.filesCreated.length > 0) {
             // Small delay to ensure files are written
             setTimeout(() => {
               // Force refresh the iframe to show new files
@@ -754,7 +754,7 @@ export default function LocalDevelopmentPage() {
         log('Code applied successfully!');
         console.log('[applyGeneratedCode] Response data:', data);
         console.log('[applyGeneratedCode] Debug info:', data.debug);
-        console.log('[applyGeneratedCode] Current sandboxData:', sandboxData);
+        console.log('[applyGeneratedCode] Current projectData:', projectData);
         console.log('[applyGeneratedCode] Current iframe element:', iframeRef.current);
         console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current?.src);
         
@@ -795,7 +795,7 @@ export default function LocalDevelopmentPage() {
           }
           
           // Fetch updated file structure
-          await fetchSandboxFiles();
+          await fetchProjectFiles();
           
           // Automatically check and install any missing packages
           await checkAndInstallPackages();
@@ -810,11 +810,11 @@ export default function LocalDevelopmentPage() {
           const refreshDelay = appConfig.codeApplication.defaultRefreshDelay; // Allow Vite to process changes
           
           setTimeout(() => {
-            if (iframeRef.current && sandboxData?.url) {
+            if (iframeRef.current && projectData?.url) {
               console.log('[home] Refreshing iframe after code application...');
               
               // Method 1: Change src with timestamp
-              const urlWithTimestamp = `${sandboxData.url}?t=${Date.now()}&applied=true`;
+              const urlWithTimestamp = `${projectData.url}?t=${Date.now()}&applied=true`;
               iframeRef.current.src = urlWithTimestamp;
               
               // Method 2: Force reload after a short delay
@@ -835,7 +835,7 @@ export default function LocalDevelopmentPage() {
         }
         
           // Give Vite HMR a moment to detect changes, then ensure refresh
-          if (iframeRef.current && sandboxData?.url) {
+          if (iframeRef.current && projectData?.url) {
             // Wait for Vite to process the file changes
             // If packages were installed, wait longer for Vite to restart
             const packagesInstalled = results?.packagesInstalled?.length > 0 || data.results?.packagesInstalled?.length > 0;
@@ -843,14 +843,14 @@ export default function LocalDevelopmentPage() {
             console.log(`[applyGeneratedCode] Packages installed: ${packagesInstalled}, refresh delay: ${refreshDelay}ms`);
             
             setTimeout(async () => {
-            if (iframeRef.current && sandboxData?.url) {
+            if (iframeRef.current && projectData?.url) {
               console.log('[applyGeneratedCode] Starting iframe refresh sequence...');
               console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current.src);
-              console.log('[applyGeneratedCode] Sandbox URL:', sandboxData.url);
+              console.log('[applyGeneratedCode] Project URL:', projectData.url);
               
               // Method 1: Try direct navigation first
               try {
-                const urlWithTimestamp = `${sandboxData.url}?t=${Date.now()}&force=true`;
+                const urlWithTimestamp = `${projectData.url}?t=${Date.now()}&force=true`;
                 console.log('[applyGeneratedCode] Attempting direct navigation to:', urlWithTimestamp);
                 
                 // Remove any existing onload handler
@@ -886,7 +886,7 @@ export default function LocalDevelopmentPage() {
               newIframe.className = iframeRef.current.className;
               newIframe.title = iframeRef.current.title;
               newIframe.allow = iframeRef.current.allow;
-              // Copy sandbox attributes
+              // Copy iframe security attributes
               const sandboxValue = iframeRef.current.getAttribute('sandbox');
               if (sandboxValue) {
                 newIframe.setAttribute('sandbox', sandboxValue);
@@ -896,7 +896,7 @@ export default function LocalDevelopmentPage() {
               iframeRef.current.remove();
               
               // Add new iframe
-              newIframe.src = `${sandboxData.url}?t=${Date.now()}&recreated=true`;
+              newIframe.src = `${projectData.url}?t=${Date.now()}&recreated=true`;
               parent?.appendChild(newIframe);
               
               // Update ref
@@ -904,7 +904,7 @@ export default function LocalDevelopmentPage() {
               
               console.log('[applyGeneratedCode] Iframe recreated with new content');
             } else {
-              console.error('[applyGeneratedCode] No iframe or sandbox URL available for refresh');
+              console.error('[applyGeneratedCode] No iframe or project URL available for refresh');
             }
           }, refreshDelay); // Dynamic delay based on whether packages were installed
         }
@@ -928,11 +928,11 @@ export default function LocalDevelopmentPage() {
     }
   };
 
-  const fetchSandboxFiles = async () => {
-    if (!sandboxData) return;
+  const fetchProjectFiles = async () => {
+    if (!projectData) return;
     
     try {
-      const response = await fetch('/api/get-sandbox-files', {
+      const response = await fetch('/api/get-project-files', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -942,13 +942,13 @@ export default function LocalDevelopmentPage() {
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
-          setSandboxFiles(data.files || {});
+          setProjectFiles(data.files || {});
           setFileStructure(data.structure || '');
-          console.log('[fetchSandboxFiles] Updated file list:', Object.keys(data.files || {}).length, 'files');
+          console.log('[fetchProjectFiles] Updated file list:', Object.keys(data.files || {}).length, 'files');
         }
       }
     } catch (error) {
-      console.error('[fetchSandboxFiles] Error fetching files:', error);
+      console.error('[fetchProjectFiles] Error fetching files:', error);
     }
   };
   
@@ -968,8 +968,8 @@ export default function LocalDevelopmentPage() {
           
           // Refresh the iframe after a short delay
           setTimeout(() => {
-            if (iframeRef.current && sandboxData?.url) {
-              iframeRef.current.src = `${sandboxData.url}?t=${Date.now()}`;
+            if (iframeRef.current && projectData?.url) {
+              iframeRef.current.src = `${projectData.url}?t=${Date.now()}`;
             }
           }, 2000);
         } else {
@@ -1389,8 +1389,8 @@ export default function LocalDevelopmentPage() {
         </div>
       );
     } else if (activeTab === 'preview') {
-      // Show screenshot when we have one and (loading OR generating OR no sandbox yet)
-      if (urlScreenshot && (loading || generationProgress.isGenerating || !sandboxData?.url || isPreparingDesign)) {
+      // Show screenshot when we have one and (loading OR generating OR no project yet)
+      if (urlScreenshot && (loading || generationProgress.isGenerating || !projectData?.url || isPreparingDesign)) {
         return (
           <div className="relative w-full h-full bg-gray-100">
             <img 
@@ -1436,8 +1436,8 @@ export default function LocalDevelopmentPage() {
         );
       }
       
-      // Show sandbox iframe only when not in any loading state
-      if (sandboxData?.url && !loading) {
+      // Show project iframe only when not in any loading state
+      if (projectData?.url && !loading) {
         return (
           <div className="relative w-full h-full">
             <iframe

@@ -12,23 +12,52 @@ import { FileManifest } from '@/types/file-manifest';
 import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 
-// Initialize model providers
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+// Provider configuration based on environment variable
+const PROVIDER = process.env.AI_PROVIDER || 'auto';
 
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
+// Initialize only the selected model provider or auto-initialize based on available API keys
+let groq: ReturnType<typeof createGroq> | null = null;
+let anthropic: ReturnType<typeof createAnthropic> | null = null;
+let googleGenerativeAI: ReturnType<typeof createGoogleGenerativeAI> | null = null;
+let openai: ReturnType<typeof createOpenAI> | null = null;
 
-const googleGenerativeAI = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+// Initialize providers based on configuration
+if (PROVIDER === 'groq' || (PROVIDER === 'auto' && process.env.GROQ_API_KEY)) {
+  groq = createGroq({
+    apiKey: process.env.GROQ_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized Groq provider');
+}
 
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+if (PROVIDER === 'anthropic' || (PROVIDER === 'auto' && process.env.ANTHROPIC_API_KEY)) {
+  anthropic = createAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
+  });
+  console.log('[generate-ai-code-stream] Initialized Anthropic provider');
+}
+
+if (PROVIDER === 'google' || (PROVIDER === 'auto' && process.env.GEMINI_API_KEY)) {
+  googleGenerativeAI = createGoogleGenerativeAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized Google provider');
+}
+
+if (PROVIDER === 'openai' || (PROVIDER === 'auto' && process.env.OPENAI_API_KEY)) {
+  openai = createOpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized OpenAI provider');
+}
+
+// Initialize Bedrock client only if needed
+const useBedrock = PROVIDER === 'bedrock' || 
+  (PROVIDER === 'auto' && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+
+if (useBedrock) {
+  console.log('[generate-ai-code-stream] Initialized AWS Bedrock provider');
+}
 
 // Model mapping for different providers
 const MODEL_MAPPING: Record<string, { provider: string; modelId: string }> = {
@@ -111,14 +140,19 @@ function getModelProvider(modelId: string) {
 
   switch (modelConfig.provider) {
     case 'openai':
+      if (!openai) throw new Error('OpenAI provider not initialized. Set AI_PROVIDER=openai or AI_PROVIDER=auto and provide OPENAI_API_KEY');
       return openai(modelConfig.modelId);
     case 'anthropic':
+      if (!anthropic) throw new Error('Anthropic provider not initialized. Set AI_PROVIDER=anthropic or AI_PROVIDER=auto and provide ANTHROPIC_API_KEY');
       return anthropic(modelConfig.modelId);
     case 'groq':
+      if (!groq) throw new Error('Groq provider not initialized. Set AI_PROVIDER=groq or AI_PROVIDER=auto and provide GROQ_API_KEY');
       return groq(modelConfig.modelId);
     case 'google':
+      if (!googleGenerativeAI) throw new Error('Google provider not initialized. Set AI_PROVIDER=google or AI_PROVIDER=auto and provide GEMINI_API_KEY');
       return googleGenerativeAI(modelConfig.modelId);
     case 'bedrock':
+      if (!useBedrock) throw new Error('AWS Bedrock not initialized. Set AI_PROVIDER=bedrock or AI_PROVIDER=auto and provide AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
       return {
         async *streamText(options: any) {
           const stream = bedrockClient.streamText({
@@ -1305,6 +1339,7 @@ It's better to have 3 complete files than 10 incomplete files.`
         }
         
         // Add reasoning effort for GPT-5 models
+        const isOpenAI = openai !== null && model.includes('openai');
         if (isOpenAI) {
           streamOptions.experimental_providerMetadata = {
             openai: {
@@ -1662,6 +1697,11 @@ Provide the complete file content without any truncation. Include all necessary 
                   completionClient = anthropic;
                 } else {
                   completionClient = groq;
+                }
+                
+                // Make sure the completion client exists before using it
+                if (!completionClient) {
+                  throw new Error(`Provider for model ${model} is not initialized. Check your AI_PROVIDER setting.`);
                 }
                 
                 const completionResult = await streamText({

@@ -22,7 +22,11 @@ pnpm install
 # Required
 FIRECRAWL_API_KEY=your_firecrawl_api_key  # Get from https://firecrawl.dev (Web scraping)
 
-# Optional (need at least one AI provider)
+# AI Provider Selection
+AI_PROVIDER=auto  # Values: 'auto', 'anthropic', 'openai', 'google', 'groq', 'bedrock'
+# 'auto' will use any available provider based on API keys
+
+# AI Providers (need at least one)
 ANTHROPIC_API_KEY=your_anthropic_api_key  # Get from https://console.anthropic.com
 OPENAI_API_KEY=your_openai_api_key  # Get from https://platform.openai.com (GPT-5)
 GEMINI_API_KEY=your_gemini_api_key  # Get from https://aistudio.google.com/app/apikey
@@ -65,6 +69,23 @@ Open Lovable uses a local development approach to build and run React applicatio
 - **Project Download**: Download your entire project as a ZIP file to use elsewhere
 
 This architecture eliminates the need for cloud sandboxes, allowing you to work with your code directly on your machine.
+
+## AI Provider Selection
+
+Open Lovable supports multiple AI providers and allows you to control which ones are initialized:
+
+- **Auto Mode**: By default, the system will initialize any provider for which you have a valid API key
+- **Single Provider**: You can specify a single provider to use by setting the `AI_PROVIDER` environment variable
+- **Available Providers**: `anthropic`, `openai`, `google`, `groq`, `bedrock`
+
+To configure your preferred provider, add this to your `.env.local` file:
+
+```env
+# Values: 'auto', 'anthropic', 'openai', 'google', 'groq', 'bedrock'
+AI_PROVIDER=auto
+```
+
+This helps optimize resource usage by only initializing the providers you need.
 
 ## License
 
