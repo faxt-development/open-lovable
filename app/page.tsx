@@ -21,10 +21,19 @@ import {
   SiJson 
 } from '@/lib/icons';
 import { motion, AnimatePresence } from 'framer-motion';
-import CodeApplicationProgress, { type CodeApplicationState } from '@/components/CodeApplicationProgress';
+import LocalPreview from '@/components/LocalPreview';
+import { 
+  writeFile, 
+  readFile, 
+  getFileStructure,
+  startDevServer,
+  stopDevServer,
+  runCommand
+} from '@/lib/local-file-system';
 
-interface SandboxData {
-  sandboxId: string;
+interface ProjectData {
+  projectName: string;
+  port: number;
   url: string;
   [key: string]: any;
 }
@@ -42,12 +51,19 @@ interface ChatMessage {
   };
 }
 
-export default function AISandboxPage() {
-  const [sandboxData, setSandboxData] = useState<SandboxData | null>(null);
+interface CodeApplicationState {
+  stage: 'analyzing' | 'installing' | 'applying' | 'complete' | null;
+  packages?: string[];
+  installedPackages?: string[];
+  filesGenerated?: string[];
+}
+
+export default function LocalDevelopmentPage() {
+  const [projectData, setProjectData] = useState<ProjectData | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ text: 'Not connected', active: false });
   const [responseArea, setResponseArea] = useState<string[]>([]);
-  const [structureContent, setStructureContent] = useState('No sandbox created yet');
+  const [structureContent, setStructureContent] = useState('No project created yet');
   const [promptInput, setPromptInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -68,6 +84,9 @@ export default function AISandboxPage() {
   const [urlInput, setUrlInput] = useState('');
   const [urlStatus, setUrlStatus] = useState<string[]>([]);
   const [showHomeScreen, setShowHomeScreen] = useState(true);
+  const [projectDataState, setProjectDataState] = useState<any>(null);
+  const [devServerStatus, setDevServerStatus] = useState<string>('Not started');
+  const [devServerStatusOk, setDevServerStatusOk] = useState<boolean>(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['app', 'src', 'src/components']));
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [homeScreenFading, setHomeScreenFading] = useState(false);
@@ -134,7 +153,7 @@ export default function AISandboxPage() {
     lastProcessedPosition: 0
   });
 
-  // Clear old conversation data on component mount and create/restore sandbox
+  // Initialize local project on component mount
   useEffect(() => {
     let isMounted = true;
 
@@ -148,7 +167,7 @@ export default function AISandboxPage() {
         });
         console.log('[home] Cleared old conversation data on mount');
       } catch (error) {
-        console.error('[ai-sandbox] Failed to clear old conversation:', error);
+        console.error('[local-dev] Failed to clear old conversation:', error);
         if (isMounted) {
           addChatMessage('Failed to clear old conversation data.', 'error');
         }
@@ -156,24 +175,47 @@ export default function AISandboxPage() {
       
       if (!isMounted) return;
 
-      // Check if sandbox ID is in URL
-      const sandboxIdParam = searchParams.get('sandbox');
+      // Check if project name is in URL
+      const projectNameParam = searchParams.get('project');
+      const projectName = projectNameParam || 'default-project';
       
       setLoading(true);
       try {
-        if (sandboxIdParam) {
-          console.log('[home] Attempting to restore sandbox:', sandboxIdParam);
-          // For now, just create a new sandbox - you could enhance this to actually restore
-          // the specific sandbox if your backend supports it
-          await createSandbox(true);
+        console.log('[home] Initializing local project:', projectName);
+        
+        // Fetch local file structure
+        const response = await fetch(`/api/local-files?path=${projectName}`);
+        const data = await response.json();
+        
+        if (data.success) {
+          // Set project data
+          setProjectData({
+            projectName,
+            port: 3000, // Default port for local development
+            url: `http://localhost:3000`,
+          });
+          
+          // Display file structure
+          if (data.structure) {
+            setStructureContent(JSON.stringify(data.structure, null, 2));
+          }
+          
+          // Update URL with project name if not already present
+          if (!projectNameParam) {
+            const newParams = new URLSearchParams(searchParams.toString());
+            newParams.set('project', projectName);
+            router.push(`/?${newParams.toString()}`, { scroll: false });
+          }
+          
+          // Add welcome message
+          addChatMessage(`Local development project initialized! I can help you build your app. Just ask me to create components and I'll automatically apply them!`, 'system');
         } else {
-          console.log('[home] No sandbox in URL, creating new sandbox automatically...');
-          await createSandbox(true);
+          throw new Error(data.error || 'Failed to fetch local project files');
         }
       } catch (error) {
-        console.error('[ai-sandbox] Failed to create or restore sandbox:', error);
+        console.error('[local-dev] Failed to initialize local project:', error);
         if (isMounted) {
-          addChatMessage('Failed to create or restore sandbox.', 'error');
+          addChatMessage(`Failed to initialize local project: ${error.message}`, 'error');
         }
       } finally {
         if (isMounted) {
@@ -218,17 +260,17 @@ export default function AISandboxPage() {
 
 
   useEffect(() => {
-    // Only check sandbox status on mount and when user navigates to the page
-    checkSandboxStatus();
+    // Only check dev server status on mount and when user navigates to the page
+    checkDevServerStatus();
     
     // Optional: Check status when window regains focus
     const handleFocus = () => {
-      checkSandboxStatus();
+      checkDevServerStatus();
     };
     
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectData?.projectName]); // Re-run when project name changes
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -237,8 +279,9 @@ export default function AISandboxPage() {
   }, [chatMessages]);
 
 
-  const updateStatus = (text: string, active: boolean) => {
-    setStatus({ text, active });
+  const updateStatus = (status: string, ok: boolean) => {
+    setDevServerStatus(status);
+    setDevServerStatusOk(ok);
   };
 
   const log = (message: string, type: 'info' | 'error' | 'command' = 'info') => {
@@ -346,112 +389,106 @@ export default function AISandboxPage() {
     }
   };
 
-  const checkSandboxStatus = async () => {
+  const checkDevServerStatus = async () => {
+    if (!projectData?.projectName) return;
+    
     try {
-      const response = await fetch('/api/sandbox-status');
+      const response = await fetch('/api/dev-server/status');
       const data = await response.json();
       
-      if (data.active && data.healthy && data.sandboxData) {
-        setSandboxData(data.sandboxData);
-        updateStatus('Sandbox active', true);
-      } else if (data.active && !data.healthy) {
-        // Sandbox exists but not responding
-        updateStatus('Sandbox not responding', false);
-        // Optionally try to create a new one
+      if (data.success && data.running) {
+        updateStatus('Dev server active', true);
       } else {
-        setSandboxData(null);
-        updateStatus('No sandbox', false);
+        updateStatus('Dev server not running', false);
       }
     } catch (error) {
-      console.error('Failed to check sandbox status:', error);
-      setSandboxData(null);
-      updateStatus('Error', false);
+      console.error('Failed to check dev server status:', error);
+      updateStatus('Error checking server status', false);
     }
   };
 
-  const createSandbox = async (fromHomeScreen = false) => {
-    console.log('[createSandbox] Starting sandbox creation...');
+  const initializeLocalProject = async (projectName: string = 'default-project') => {
+    console.log('[initializeLocalProject] Starting local project initialization...');
     setLoading(true);
     setShowLoadingBackground(true);
-    updateStatus('Creating sandbox...', false);
+    updateStatus('Initializing project...', false);
     setResponseArea([]);
     setScreenshotError(null);
     
     try {
-      const response = await fetch('/api/create-ai-sandbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-      
+      // Get or create project structure
+      const response = await fetch(`/api/local-files?path=${projectName}`);
       const data = await response.json();
-      console.log('[createSandbox] Response data:', data);
+      console.log('[initializeLocalProject] Response data:', data);
       
       if (data.success) {
-        setSandboxData(data);
-        updateStatus('Sandbox active', true);
-        log('Sandbox created successfully!');
-        log(`Sandbox ID: ${data.sandboxId}`);
-        log(`URL: ${data.url}`);
+        // Set project data
+        const projectData = {
+          projectName,
+          port: 3000, // Default port for local development
+          url: `http://localhost:3000`,
+        };
         
-        // Update URL with sandbox ID
+        setProjectData(projectData);
+        updateStatus('Project initialized', true);
+        log('Local project initialized successfully!');
+        log(`Project: ${projectName}`);
+        log(`URL: ${projectData.url}`);
+        
+        // Update URL with project name
         const newParams = new URLSearchParams(searchParams.toString());
-        newParams.set('sandbox', data.sandboxId);
+        newParams.set('project', projectName);
         newParams.set('model', aiModel);
         router.push(`/?${newParams.toString()}`, { scroll: false });
         
-        // Fade out loading background after sandbox loads
+        // Fade out loading background after project loads
         setTimeout(() => {
           setShowLoadingBackground(false);
-        }, 3000);
+        }, 1000);
         
         if (data.structure) {
           displayStructure(data.structure);
         }
         
-        // Fetch sandbox files after creation
-        setTimeout(fetchSandboxFiles, 1000);
-        
-        // Restart Vite server to ensure it's running
+        // Start the development server
         setTimeout(async () => {
           try {
-            console.log('[createSandbox] Ensuring Vite server is running...');
-            const restartResponse = await fetch('/api/restart-vite', {
+            console.log('[initializeLocalProject] Starting development server...');
+            const startServerResponse = await fetch('/api/dev-server/start', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' }
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ projectName })
             });
             
-            if (restartResponse.ok) {
-              const restartData = await restartResponse.json();
-              if (restartData.success) {
-                console.log('[createSandbox] Vite server started successfully');
+            if (startServerResponse.ok) {
+              const serverData = await startServerResponse.json();
+              if (serverData.success) {
+                console.log('[initializeLocalProject] Dev server started successfully');
+                addChatMessage('Local development server started successfully!', 'system');
               }
             }
           } catch (error) {
-            console.error('[createSandbox] Error starting Vite server:', error);
+            console.error('[initializeLocalProject] Error starting dev server:', error);
           }
-        }, 2000);
+        }, 1000);
         
-        // Only add welcome message if not coming from home screen
-        if (!fromHomeScreen) {
-          addChatMessage(`Sandbox created! ID: ${data.sandboxId}. I now have context of your sandbox and can help you build your app. Just ask me to create components and I'll automatically apply them!
-
-Tip: I automatically detect and install npm packages from your code imports (like react-router-dom, axios, etc.)`, 'system');
-        }
+        // Add welcome message
+        addChatMessage(`Local project initialized! I can help you build your app. Just ask me to create components and I'll automatically apply them to your local project.`, 'system');
         
+        // Set up the preview iframe
         setTimeout(() => {
           if (iframeRef.current) {
-            iframeRef.current.src = data.url;
+            iframeRef.current.src = projectData.url;
           }
-        }, 100);
+        }, 1500);
       } else {
         throw new Error(data.error || 'Unknown error');
       }
     } catch (error: any) {
-      console.error('[createSandbox] Error:', error);
+      console.error('[initializeLocalProject] Error:', error);
       updateStatus('Error', false);
-      log(`Failed to create sandbox: ${error.message}`, 'error');
-      addChatMessage(`Failed to create sandbox: ${error.message}`, 'system');
+      log(`Failed to initialize local project: ${error.message}`, 'error');
+      addChatMessage(`Failed to initialize local project: ${error.message}`, 'system');
     } finally {
       setLoading(false);
     }
@@ -489,7 +526,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           response: code,
           isEdit: isEdit,
           packages: pendingPackages,
-          sandboxId: sandboxData?.sandboxId // Pass the sandbox ID to ensure proper connection
+          projectName: projectData?.projectName // Pass the project name to ensure proper connection
         })
       });
       
@@ -1881,48 +1918,45 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
 
   const downloadZip = async () => {
-    if (!sandboxData) {
-      addChatMessage('No active sandbox to download. Create a sandbox first!', 'system');
+    if (!projectData) {
+      addChatMessage('No active project to download.', 'system');
       return;
     }
     
     setLoading(true);
     log('Creating zip file...');
-    addChatMessage('Creating ZIP file of your Vite app...', 'system');
+    addChatMessage('Creating ZIP file of your local project...', 'system');
     
     try {
-      const response = await fetch('/api/create-zip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      const response = await fetch(`/api/local-files/download?projectName=${projectData.projectName}`, {
+        method: 'GET'
       });
       
-      const data = await response.json();
-      
-      if (data.success) {
-        log('Zip file created!');
-        addChatMessage('ZIP file created! Download starting...', 'system');
-        
-        const link = document.createElement('a');
-        link.href = data.dataUrl;
-        link.download = data.fileName || 'e2b-project.zip';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        addChatMessage(
-          'Your Vite app has been downloaded! To run it locally:\n' +
-          '1. Unzip the file\n' +
-          '2. Run: npm install\n' +
-          '3. Run: npm run dev\n' +
-          '4. Open http://localhost:5173',
-          'system'
-        );
-      } else {
-        throw new Error(data.error);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.statusText}`);
       }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${projectData.projectName}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+      
+      log('Zip file downloaded!');
+      addChatMessage(
+        'Your project has been downloaded! To run it locally:\n' +
+        '1. Unzip the file\n' +
+        '2. Run: npm install\n' +
+        '3. Run: npm run dev',
+        'system'
+      );
     } catch (error: any) {
-      log(`Failed to create zip: ${error.message}`, 'error');
-      addChatMessage(`Failed to create ZIP: ${error.message}`, 'system');
+      log(`Failed to download zip: ${error.message}`, 'error');
+      addChatMessage(`Failed to download ZIP: ${error.message}`, 'system');
     } finally {
       setLoading(false);
     }
@@ -1934,8 +1968,8 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       return;
     }
     
-    if (!sandboxData) {
-      addChatMessage('Please create a sandbox first', 'system');
+    if (!projectData) {
+      addChatMessage('No active project to apply code to', 'system');
       return;
     }
     
@@ -2487,7 +2521,7 @@ Focus on the key sections and content, making it clean and modern.`;
             prompt,
             model: aiModel,
             context: {
-              sandboxId: sandboxData?.sandboxId,
+              projectName: projectData.projectName,
               structure: structureContent,
               conversationContext: conversationContext
             }
@@ -3046,7 +3080,7 @@ Focus on the key sections and content, making it clean and modern.`;
             onClick={reapplyLastGeneration}
             size="sm"
             title="Re-apply last generation"
-            disabled={!conversationContext.lastGeneratedCode || !sandboxData}
+            disabled={!conversationContext.lastGeneratedCode || !projectData}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -3055,17 +3089,19 @@ Focus on the key sections and content, making it clean and modern.`;
           <Button 
             variant="code"
             onClick={downloadZip}
-            disabled={!sandboxData}
+            disabled={!projectData}
             size="sm"
-            title="Download your Vite app as ZIP"
+            title="Download your local project as ZIP"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
             </svg>
           </Button>
           <div className="inline-flex items-center gap-2 bg-[#36322F] text-white px-3 py-1.5 rounded-[10px] text-sm font-medium [box-shadow:inset_0px_-2px_0px_0px_#171310,_0px_1px_6px_0px_rgba(58,_33,_8,_58%)]">
-            <span id="status-text">{status.text}</span>
-            <div className={`w-2 h-2 rounded-full ${status.active ? 'bg-green-500' : 'bg-gray-500'}`} />
+            <div className="flex items-center gap-2 text-sm">
+              <div className={`w-2 h-2 rounded-full ${devServerStatusOk ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <div>{devServerStatus}</div>
+            </div>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Open Lovable
 
-Chat with AI to build React apps instantly. An example app made by the [Firecrawl](https://firecrawl.dev/?ref=open-lovable-github) team. For a complete cloud solution, check out [Lovable.dev ❤️](https://lovable.dev/).
+Chat with AI to build React apps locally. An example app made by the [Firecrawl](https://firecrawl.dev/?ref=open-lovable-github) team. For a complete cloud solution, check out [Lovable.dev ❤️](https://lovable.dev/).
 
 <img src="https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExbmZtaHFleGRsMTNlaWNydGdianI4NGQ4dHhyZjB0d2VkcjRyeXBucCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/ZFVLWMa6dVskQX0qu1/giphy.gif" alt="Open Lovable Demo" width="100%"/>
 
@@ -12,13 +12,14 @@ Chat with AI to build React apps instantly. An example app made by the [Firecraw
 ```bash
 git clone https://github.com/mendableai/open-lovable.git
 cd open-lovable
-npm install
+pnpm install
 ```
+
+> **Important**: We use `pnpm` instead of `npm` to resolve a lightningcss dependency issue. If you don't have pnpm installed, you can install it with `npm install -g pnpm`.
 
 2. **Add `.env.local`**
 ```env
 # Required
-E2B_API_KEY=your_e2b_api_key  # Get from https://e2b.dev (Sandboxes)
 FIRECRAWL_API_KEY=your_firecrawl_api_key  # Get from https://firecrawl.dev (Web scraping)
 
 # Optional (need at least one AI provider)
@@ -48,10 +49,22 @@ AWS_REGION=us-east-1  # Change to your preferred AWS region
 
 3. **Run**
 ```bash
-npm run dev
+pnpm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000)  
+
+## Local Project Architecture
+
+Open Lovable uses a local development approach to build and run React applications:
+
+- **Local File System**: All project files are created and managed directly on your local file system
+- **Local Development Server**: A Next.js development server runs your React application locally
+- **AI Code Generation**: AI models generate code based on your prompts and apply it to your local project
+- **Live Preview**: See your application running in real-time as you make changes
+- **Project Download**: Download your entire project as a ZIP file to use elsewhere
+
+This architecture eliminates the need for cloud sandboxes, allowing you to work with your code directly on your machine.
 
 ## License
 

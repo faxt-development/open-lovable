@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Lovable - Application Flow</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8fafc;
+            color: #1e293b;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1e40af;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 0.5rem;
+        }
+        .mermaid {
+            margin: 2rem 0;
+            min-height: 600px;
+        }
+        .legend {
+            background: #f1f5f9;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-top: 2rem;
+            border-left: 4px solid #3b82f6;
+        }
+        .legend h3 {
+            margin-top: 0;
+            color: #1e40af;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Open Lovable - Application Architecture</h1>
+        
+        <h2>Frontend Components</h2>
+        <div class="mermaid">
+            flowchart TD
+                A[Main Page] --> B[AI Sandbox Component]
+                B --> C[Code Editor]
+                B --> D[File Explorer]
+                B --> E[Terminal Output]
+                B --> F[Preview Pane]
+
+                classDef frontend fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+                class A,B,C,D,E,F frontend
+        </div>
+
+        <h2>API Endpoints</h2>
+        <div class="mermaid">
+            flowchart TD
+                subgraph Sandbox[Sandbox Management]
+                    G[Create AI Sandbox] --> H[Generate AI Code]
+                    G --> I[Apply AI Code]
+                    G --> J[Run Commands]
+                end
+
+                subgraph Monitoring[Monitoring]
+                    K[Sandbox Management] --> L[Monitor Vite Logs]
+                    K --> M[Check Vite Errors]
+                    K --> N[Restart Vite]
+                end
+
+                subgraph Files[File Operations]
+                    O[File Operations] --> P[Get Sandbox Files]
+                    O --> Q[Create ZIP]
+                end
+
+                subgraph Scraping[Web Scraping]
+                    R[Web Scraping] --> S[Scrape URL]
+                    R --> T[Scrape Screenshot]
+                end
+
+                classDef api fill:#d1fae5,stroke:#10b981,stroke-width:2px
+                class G,H,I,J,K,L,M,N,O,P,Q,R,S,T api
+        </div>
+
+        <h2>External Services</h2>
+        <div class="mermaid">
+            flowchart TD
+                U[AI Providers] --> G[Create AI Sandbox]
+                G --> V[E2B Sandbox]
+                V --> W[Vite Dev Server]
+
+                classDef external fill:#fef3c7,stroke:#f59e0b,stroke-width:2px
+                class U,V,W external
+        </div>
+
+        <h2>Integration Flow</h2>
+        <div class="mermaid">
+            flowchart TD
+                %% Frontend
+                A[Main Page] --> B[AI Sandbox Component]
+                
+                %% API Connections
+                B --> G[Create AI Sandbox]
+                B --> K[Sandbox Management]
+                B --> O[File Operations]
+                B --> R[Web Scraping]
+                
+                %% External Services
+                G --> U[AI Providers]
+                G --> V[E2B Sandbox]
+                V --> W[Vite Dev Server]
+                
+                %% Styling
+                classDef frontend fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+                classDef api fill:#d1fae5,stroke:#10b981,stroke-width:2px
+                classDef external fill:#fef3c7,stroke:#f59e0b,stroke-width:2px
+                
+                class A,B frontend
+                class G,K,O,R api
+                class U,V,W external
+        </div>
+
+        <div class="legend">
+            <h3>Legend</h3>
+            <p><strong>Frontend (Blue):</strong> React-based UI components that users interact with.</p>
+            <p><strong>API Endpoints (Green):</strong> Serverless functions that handle specific operations.</p>
+            <p><strong>External Services (Yellow):</strong> Third-party services and tools the application integrates with.</p>
+            
+            <h4>Key Features:</h4>
+            <ul>
+                <li>AI-assisted code generation and editing</li>
+                <li>Live preview with Vite dev server</li>
+                <li>File system management</li>
+                <li>Web scraping capabilities</li>
+                <li>Sandboxed code execution</li>
+                <li>Real-time error monitoring</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>

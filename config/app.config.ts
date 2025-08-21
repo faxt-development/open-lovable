@@ -2,26 +2,21 @@
 // This file contains all configurable settings for the application
 
 export const appConfig = {
-  // E2B Sandbox Configuration
-  e2b: {
-    // Sandbox timeout in minutes
-    timeoutMinutes: 15,
+  // Local Development Configuration
+  localDev: {
+    // Default development server port
+    defaultPort: 3000,
     
-    // Convert to milliseconds for E2B API
-    get timeoutMs() {
-      return this.timeoutMinutes * 60 * 1000;
-    },
-    
-    // Vite development server port
-    vitePort: 5173,
-    
-    // Time to wait for Vite to be ready (in milliseconds)
-    viteStartupDelay: 7000,
+    // Time to wait for dev server to be ready (in milliseconds)
+    startupDelay: 7000,
     
     // Time to wait for CSS rebuild (in milliseconds)
     cssRebuildDelay: 2000,
     
-    // Default sandbox template (if using templates)
+    // Status check interval (in milliseconds)
+    statusCheckInterval: 5000,
+    
+    // Default project template (if using templates)
     defaultTemplate: undefined, // or specify a template ID
   },
   
