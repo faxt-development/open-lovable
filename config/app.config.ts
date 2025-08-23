@@ -23,30 +23,54 @@ export const appConfig = {
   // AI Model Configuration
   ai: {
     // Default AI model
-    defaultModel: 'moonshotai/kimi-k2-instruct',
+    defaultModel: 'openai/gpt-4-turbo',
     
     // Available models
     availableModels: [
-      'openai/gpt-5',
-      'moonshotai/kimi-k2-instruct',
-      'anthropic/claude-sonnet-4-20250514',
-      'google/gemini-2.5-pro',
+      // OpenAI
+      'openai/gpt-4-turbo',
+      'openai/gpt-4',
+      'openai/gpt-3.5-turbo',
+      // Anthropic (direct)
+      'anthropic/claude-3-sonnet',
+      'anthropic/claude-3-haiku',
+      'anthropic/claude-3-opus',
+      // Google
+      'google/gemini-pro',
+      // Groq
+      'groq/llama3-70b',
+      'groq/llama3-8b',
+      'groq/mixtral-8x7b',
+      // AWS Bedrock
       'bedrock/claude-3-sonnet',
       'bedrock/claude-3-haiku',
       'bedrock/claude-2',
-      'bedrock/titan-text-express'
+      'bedrock/titan-text-express',
+      'bedrock/titan-text-lite'
     ],
     
     // Model display names
     modelDisplayNames: {
-      'openai/gpt-5': 'GPT-5',
-      'moonshotai/kimi-k2-instruct': 'Kimi K2 Instruct',
-      'anthropic/claude-sonnet-4-20250514': 'Sonnet 4',
-      'google/gemini-2.5-pro': 'Gemini 2.5 Pro',
+      // OpenAI
+      'openai/gpt-4-turbo': 'GPT-4 Turbo',
+      'openai/gpt-4': 'GPT-4',
+      'openai/gpt-3.5-turbo': 'GPT-3.5 Turbo',
+      // Anthropic (direct)
+      'anthropic/claude-3-opus': 'Claude 3 Opus',
+      'anthropic/claude-3-sonnet': 'Claude 3 Sonnet',
+      'anthropic/claude-3-haiku': 'Claude 3 Haiku',
+      // Google
+      'google/gemini-pro': 'Gemini Pro',
+      // Groq
+      'groq/llama3-70b': 'Groq: Llama3 70B',
+      'groq/llama3-8b': 'Groq: Llama3 8B',
+      'groq/mixtral-8x7b': 'Groq: Mixtral 8x7B',
+      // AWS Bedrock
       'bedrock/claude-3-sonnet': 'Bedrock: Claude 3 Sonnet',
       'bedrock/claude-3-haiku': 'Bedrock: Claude 3 Haiku',
       'bedrock/claude-2': 'Bedrock: Claude 2',
-      'bedrock/titan-text-express': 'Bedrock: Titan Text Express'
+      'bedrock/titan-text-express': 'Bedrock: Titan Text Express',
+      'bedrock/titan-text-lite': 'Bedrock: Titan Text Lite'
     },
     
     // Temperature settings for non-reasoning models

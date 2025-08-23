@@ -175,7 +175,11 @@ function getModelProvider(modelId: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'openai/gpt-4-turbo', context, isEdit = false } = await request.json();
+    const body = await request.json();
+    const prompt: string = body.prompt;
+    const context = body.context;
+    const isEdit: boolean = body.isEdit ?? false;
+    const model: string = body.model || appConfig.ai.defaultModel;
     
     console.log('[generate-ai-code-stream] Received request:');
     console.log('[generate-ai-code-stream] - model:', model);
@@ -184,7 +188,16 @@ export async function POST(request: NextRequest) {
     console.log('[generate-ai-code-stream] - context.projectId:', (context as any)?.projectId || (context as any)?.sandboxId);
     console.log('[generate-ai-code-stream] - context.currentFiles:', context?.currentFiles ? Object.keys(context.currentFiles) : 'none');
     console.log('[generate-ai-code-stream] - currentFiles count:', context?.currentFiles ? Object.keys(context.currentFiles).length : 0);
-    
+    // Debug: provider/env summary (no secrets)
+    console.log('[generate-ai-code-stream] Provider mode:', PROVIDER);
+    console.log('[generate-ai-code-stream] Env keys present:', {
+      hasGroq: !!process.env.GROQ_API_KEY,
+      hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+      hasOpenAI: !!process.env.OPENAI_API_KEY,
+      hasGemini: !!process.env.GEMINI_API_KEY,
+      hasBedrockCreds: !!process.env.AWS_ACCESS_KEY_ID && !!process.env.AWS_SECRET_ACCESS_KEY,
+    });
+
     // Initialize conversation state if not exists
     if (!global.conversationState) {
       global.conversationState = {
@@ -236,6 +249,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ 
         success: false, 
         error: 'Prompt is required' 
+      }, { status: 400 });
+    }
+    
+    // Validate model mapping early to avoid provider hangs
+    if (!MODEL_MAPPING[model]) {
+      console.error('[generate-ai-code-stream] Unsupported model requested:', model);
+      return NextResponse.json({
+        success: false,
+        error: `Unsupported model: ${model}. Please choose one of: ${Object.keys(MODEL_MAPPING).join(', ')}`
       }, { status: 400 });
     }
     

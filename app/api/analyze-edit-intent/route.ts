@@ -6,6 +6,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 import type { FileManifest } from '@/types/file-manifest';
+import { appConfig } from '@/config/app.config';
 
 // Provider configuration based on environment variable
 const PROVIDER = process.env.AI_PROVIDER || 'auto';
@@ -46,6 +47,16 @@ if (PROVIDER === 'openai' || (PROVIDER === 'auto' && process.env.OPENAI_API_KEY)
   console.log('[analyze-edit-intent] Initialized OpenAI provider');
 }
 
+// Debug: summarize provider and env detection (no secrets)
+console.log('[analyze-edit-intent] Provider mode:', PROVIDER);
+console.log('[analyze-edit-intent] Env keys present:', {
+  hasGroq: !!process.env.GROQ_API_KEY,
+  hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+  hasOpenAI: !!process.env.OPENAI_API_KEY,
+  hasGemini: !!process.env.GEMINI_API_KEY,
+  hasBedrockCreds: !!process.env.AWS_ACCESS_KEY_ID && !!process.env.AWS_SECRET_ACCESS_KEY,
+});
+
 // Schema for the AI's search plan - not file selection!
 const searchPlanSchema = z.object({
   editType: z.enum([
@@ -76,7 +87,10 @@ const searchPlanSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, manifest, model = 'openai/gpt-oss-20b' } = await request.json();
+    const body = await request.json();
+    const prompt: string = body.prompt;
+    const manifest: FileManifest = body.manifest;
+    const model: string = body.model || appConfig.ai.defaultModel;
     
     console.log('[analyze-edit-intent] Request received');
     console.log('[analyze-edit-intent] Prompt:', prompt);
