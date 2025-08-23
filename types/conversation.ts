@@ -10,6 +10,8 @@ export interface ConversationMessage {
     addedPackages?: string[]; // Packages added in this interaction
     editType?: string; // Type of edit performed
     projectName?: string; // Project name at time of message
+    projectId?: string; // Current project identifier (preferred)
+    sandboxId?: string; // Deprecated: legacy identifier for backward compatibility
   };
 }
 

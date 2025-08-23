@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 declare global {
-  var activeSandbox: any;
+  var activeProject: any;
 }
 
 export async function POST(request: NextRequest) {
@@ -15,10 +15,10 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    if (!global.activeSandbox) {
+    if (!global.activeProject) {
       return NextResponse.json({
         success: false,
-        error: 'No active sandbox'
+        error: 'No active project'
       }, { status: 404 });
     }
 
@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check which packages are already installed
-    const checkResult = await global.activeSandbox.runCode(`
+    const checkResult = await global.activeProject.runCode(`
 import os
 import json
 
@@ -145,7 +145,7 @@ print(json.dumps(result))
     // Install missing packages
     console.log('[detect-and-install-packages] Installing packages:', status.missing);
     
-    const installResult = await global.activeSandbox.runCode(`
+    const installResult = await global.activeProject.runCode(`
 import subprocess
 import os
 import json

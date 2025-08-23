@@ -1,22 +1,22 @@
 import { NextResponse } from 'next/server';
 
 declare global {
-  var activeSandbox: any;
+  var activeProject: any;
 }
 
 export async function GET() {
   try {
-    if (!global.activeSandbox) {
+    if (!global.activeProject) {
       return NextResponse.json({ 
         success: false, 
-        error: 'No active sandbox' 
+        error: 'No active project' 
       }, { status: 400 });
     }
     
     console.log('[monitor-vite-logs] Checking Vite process logs...');
     
     // Check both the error file and recent logs
-    const result = await global.activeSandbox.runCode(`
+    const result = await global.activeProject.runCode(`
 import json
 import subprocess
 import re

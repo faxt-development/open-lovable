@@ -5,7 +5,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText } from 'ai';
 import { bedrockClient, BEDROCK_MODELS } from '@/lib/aws-bedrock';
-import type { SandboxState } from '@/types/sandbox';
+import type { ProjectState, ProjectFile } from '@/types/project';
 import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
 import { executeSearchPlan, formatSearchResultsForAI, selectTargetFile } from '@/lib/file-search-executor';
 import { FileManifest } from '@/types/file-manifest';
@@ -127,7 +127,7 @@ function analyzeUserPreferences(messages: ConversationMessage[]): {
 }
 
 declare global {
-  var sandboxState: SandboxState;
+  var projectState: ProjectState;
   var conversationState: ConversationState | null;
 }
 
@@ -181,7 +181,7 @@ export async function POST(request: NextRequest) {
     console.log('[generate-ai-code-stream] - model:', model);
     console.log('[generate-ai-code-stream] - prompt:', prompt);
     console.log('[generate-ai-code-stream] - isEdit:', isEdit);
-    console.log('[generate-ai-code-stream] - context.sandboxId:', context?.sandboxId);
+    console.log('[generate-ai-code-stream] - context.projectId:', (context as any)?.projectId || (context as any)?.sandboxId);
     console.log('[generate-ai-code-stream] - context.currentFiles:', context?.currentFiles ? Object.keys(context.currentFiles) : 'none');
     console.log('[generate-ai-code-stream] - currentFiles count:', context?.currentFiles ? Object.keys(context.currentFiles).length : 0);
     
@@ -207,7 +207,7 @@ export async function POST(request: NextRequest) {
       content: prompt,
       timestamp: Date.now(),
       metadata: {
-        sandboxId: context?.sandboxId
+        projectId: (context as any)?.projectId || (context as any)?.sandboxId
       }
     };
     global.conversationState.context.messages.push(userMessage);
@@ -256,7 +256,7 @@ export async function POST(request: NextRequest) {
         // Send initial status
         await sendProgress({ type: 'status', message: 'Initializing AI...' });
         
-        // No keep-alive needed - sandbox provisioned for 10 minutes
+        // No keep-alive needed - project provisioned for 10 minutes
         
         // Check if we have a file manifest for edit mode
         let editContext = null;
@@ -264,15 +264,15 @@ export async function POST(request: NextRequest) {
         
         if (isEdit) {
           console.log('[generate-ai-code-stream] Edit mode detected - starting agentic search workflow');
-          console.log('[generate-ai-code-stream] Has fileCache:', !!global.sandboxState?.fileCache);
-          console.log('[generate-ai-code-stream] Has manifest:', !!global.sandboxState?.fileCache?.manifest);
+          console.log('[generate-ai-code-stream] Has fileCache:', !!global.projectState?.fileCache);
+          console.log('[generate-ai-code-stream] Has manifest:', !!global.projectState?.fileCache?.manifest);
           
-          const manifest: FileManifest | undefined = global.sandboxState?.fileCache?.manifest;
+          const manifest: FileManifest | undefined = global.projectState?.fileCache?.manifest;
           
           if (manifest) {
             await sendProgress({ type: 'status', message: '🔍 Creating search plan...' });
             
-            const fileContents = global.sandboxState.fileCache.files;
+            const fileContents: Record<string, ProjectFile> = global.projectState?.fileCache?.files || {};
             console.log('[generate-ai-code-stream] Files available for search:', Object.keys(fileContents).length);
             
             // STEP 1: Get search plan from AI
@@ -295,7 +295,7 @@ export async function POST(request: NextRequest) {
                 // STEP 2: Execute the search plan
                 const searchExecution = executeSearchPlan(searchPlan, 
                   Object.fromEntries(
-                    Object.entries(fileContents).map(([path, data]) => [
+                    (Object.entries<ProjectFile>(fileContents) as [string, ProjectFile][]) .map(([path, data]) => [
                       path.startsWith('/') ? path : `/home/user/app/${path}`,
                       data.content
                     ])
@@ -401,13 +401,13 @@ User request: "${prompt}"`;
           } else if (!manifest) {
             console.log('[generate-ai-code-stream] WARNING: No manifest available for edit mode!');
             
-            // Try to fetch files from sandbox if we have one
-            if (global.activeSandbox) {
-              await sendProgress({ type: 'status', message: 'Fetching current files from sandbox...' });
+            // Try to fetch files from project if we have one
+            if (global.activeProject) {
+              await sendProgress({ type: 'status', message: 'Fetching current files from project...' });
               
               try {
-                // Fetch files directly from sandbox
-                const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
+                // Fetch files directly from project
+                const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-project-files`, {
                   method: 'GET',
                   headers: { 'Content-Type': 'application/json' }
                 });
@@ -416,7 +416,7 @@ User request: "${prompt}"`;
                   const filesData = await filesResponse.json();
                   
                   if (filesData.success && filesData.manifest) {
-                    console.log('[generate-ai-code-stream] Successfully fetched manifest from sandbox');
+                    console.log('[generate-ai-code-stream] Successfully fetched manifest from project');
                     const manifest = filesData.manifest;
                     
                     // Now try to analyze edit intent with the fetched manifest
@@ -433,7 +433,7 @@ User request: "${prompt}"`;
                         
                         // For now, fall back to keyword search since we don't have file contents for search execution
                         // This path happens when no manifest was initially available
-                        let targetFiles = [];
+                        let targetFiles: string[] = [];
                         if (!searchPlan || searchPlan.searchTerms.length === 0) {
                           console.warn('[generate-ai-code-stream] No target files after fetch, searching for relevant files');
                           
@@ -559,20 +559,20 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                       console.error('[generate-ai-code-stream] Error analyzing intent after fetch:', error);
                     }
                   } else {
-                    console.error('[generate-ai-code-stream] Failed to get manifest from sandbox files');
+                    console.error('[generate-ai-code-stream] Failed to get manifest from project files');
                   }
                 } else {
-                  console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', filesResponse.status);
+                  console.error('[generate-ai-code-stream] Failed to fetch project files:', filesResponse.status);
                 }
               } catch (error) {
-                console.error('[generate-ai-code-stream] Error fetching sandbox files:', error);
+                console.error('[generate-ai-code-stream] Error fetching project files:', error);
                 await sendProgress({ 
                   type: 'warning', 
                   message: 'Could not analyze existing files for targeted edits. Proceeding with general edit mode.'
                 });
               }
             } else {
-              console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
+              console.log('[generate-ai-code-stream] No active project to fetch files from');
               await sendProgress({ 
                 type: 'warning', 
                 message: 'No existing files found. Consider generating initial code first.'
@@ -805,7 +805,7 @@ IMPORTANT: You have access to the full conversation context including:
 When the user references "the app", "the website", or "the site" without specifics, refer to:
 1. The most recently scraped website in the context
 2. The current project name in the context
-3. The files currently in the sandbox
+3. The files currently in the project
 
 If you see scraped websites in the context, you're working on a clone/recreation of that site.
 
@@ -1004,8 +1004,9 @@ CRITICAL: When files are provided in the context:
         if (context) {
           const contextParts = [];
           
-          if (context.sandboxId) {
-            contextParts.push(`Current sandbox ID: ${context.sandboxId}`);
+          if ((context as any).projectId || (context as any).sandboxId) {
+            const pid = (context as any).projectId || (context as any).sandboxId;
+            contextParts.push(`Current project ID: ${pid}`);
           }
           
           if (context.structure) {
@@ -1013,21 +1014,21 @@ CRITICAL: When files are provided in the context:
           }
           
           // Use backend file cache instead of frontend-provided files
-          let backendFiles = global.sandboxState?.fileCache?.files || {};
+          let backendFiles: Record<string, ProjectFile> = global.projectState?.fileCache?.files || {};
           let hasBackendFiles = Object.keys(backendFiles).length > 0;
           
           console.log('[generate-ai-code-stream] Backend file cache status:');
-          console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
-          console.log('[generate-ai-code-stream] - Has fileCache:', !!global.sandboxState?.fileCache);
+          console.log('[generate-ai-code-stream] - Has projectState:', !!global.projectState);
+          console.log('[generate-ai-code-stream] - Has fileCache:', !!global.projectState?.fileCache);
           console.log('[generate-ai-code-stream] - File count:', Object.keys(backendFiles).length);
-          console.log('[generate-ai-code-stream] - Has manifest:', !!global.sandboxState?.fileCache?.manifest);
+          console.log('[generate-ai-code-stream] - Has manifest:', !!global.projectState?.fileCache?.manifest);
           
-          // If no backend files and we're in edit mode, try to fetch from sandbox
-          if (!hasBackendFiles && isEdit && (global.activeSandbox || context?.sandboxId)) {
-            console.log('[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...');
+          // If no backend files and we're in edit mode, try to fetch from project
+          if (!hasBackendFiles && isEdit && (global.activeProject || (context as any)?.projectId || (context as any)?.sandboxId)) {
+            console.log('[generate-ai-code-stream] No backend files, attempting to fetch from project...');
             
             try {
-              const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
+              const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-project-files`, {
                 method: 'GET',
                 headers: { 'Content-Type': 'application/json' }
               });
@@ -1035,36 +1036,36 @@ CRITICAL: When files are provided in the context:
               if (filesResponse.ok) {
                 const filesData = await filesResponse.json();
                 if (filesData.success && filesData.files) {
-                  console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from sandbox');
+                  console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from project');
                   
-                  // Initialize sandboxState if needed
-                  if (!global.sandboxState) {
-                    global.sandboxState = {
+                  // Initialize projectState if needed
+                  if (!global.projectState) {
+                    global.projectState = {
                       fileCache: {
                         files: {},
                         lastSync: Date.now(),
-                        sandboxId: context?.sandboxId || 'unknown'
+                        projectId: (context as any)?.projectId || (context as any)?.sandboxId || 'unknown'
                       }
                     } as any;
-                  } else if (!global.sandboxState.fileCache) {
-                    global.sandboxState.fileCache = {
+                  } else if (!global.projectState.fileCache) {
+                    global.projectState.fileCache = {
                       files: {},
                       lastSync: Date.now(),
-                      sandboxId: context?.sandboxId || 'unknown'
+                      projectId: (context as any)?.projectId || (context as any)?.sandboxId || 'unknown'
                     };
                   }
                   
                   // Store files in cache
                   for (const [path, content] of Object.entries(filesData.files)) {
                     const normalizedPath = path.replace('/home/user/app/', '');
-                    global.sandboxState.fileCache.files[normalizedPath] = {
+                    global.projectState.fileCache!.files[normalizedPath] = {
                       content: content as string,
                       lastModified: Date.now()
                     };
                   }
                   
                   if (filesData.manifest) {
-                    global.sandboxState.fileCache.manifest = filesData.manifest;
+                    global.projectState.fileCache!.manifest = filesData.manifest;
                     
                     // Now try to analyze edit intent with the fetched manifest
                     if (!editContext) {
@@ -1095,13 +1096,13 @@ CRITICAL: When files are provided in the context:
                   }
                   
                   // Update variables
-                  backendFiles = global.sandboxState.fileCache.files;
+                  backendFiles = global.projectState.fileCache!.files;
                   hasBackendFiles = Object.keys(backendFiles).length > 0;
                   console.log('[generate-ai-code-stream] Updated backend cache with fetched files');
                 }
               }
             } catch (error) {
-              console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', error);
+              console.error('[generate-ai-code-stream] Failed to fetch project files:', error);
             }
           }
           
@@ -1113,8 +1114,8 @@ CRITICAL: When files are provided in the context:
               contextParts.push(`\n${editContext.systemPrompt || enhancedSystemPrompt}\n`);
               
               // Get contents of primary and context files
-              const primaryFileContents = await getFileContents(editContext.primaryFiles, global.sandboxState!.fileCache!.manifest!);
-              const contextFileContents = await getFileContents(editContext.contextFiles, global.sandboxState!.fileCache!.manifest!);
+              const primaryFileContents = await getFileContents(editContext.primaryFiles, global.projectState!.fileCache!.manifest!);
+              const contextFileContents = await getFileContents(editContext.contextFiles, global.projectState!.fileCache!.manifest!);
               
               // Format files for AI
               const formattedFiles = formatFilesForAI(primaryFileContents, contextFileContents);
@@ -1128,7 +1129,7 @@ CRITICAL: When files are provided in the context:
               contextParts.push('\nYou MUST analyze the user request and determine which specific file(s) to edit.');
               contextParts.push('\nCurrent project files (DO NOT regenerate all of these):');
               
-              const fileEntries = Object.entries(backendFiles);
+              const fileEntries = Object.entries<ProjectFile>(backendFiles) as [string, ProjectFile][];
               console.log(`[generate-ai-code-stream] Using backend cache: ${fileEntries.length} files`);
               
               // Show file list first for reference
@@ -1704,8 +1705,10 @@ Provide the complete file content without any truncation. Include all necessary 
                   throw new Error(`Provider for model ${model} is not initialized. Check your AI_PROVIDER setting.`);
                 }
                 
-                const completionResult = await streamText({
-                  model: completionClient(modelMapping[model] || model),
+                const resolvedModelId = MODEL_MAPPING[model]?.modelId || model;
+                const isGPT5 = /gpt-5/i.test(resolvedModelId);
+                const completionOptions: any = {
+                  model: completionClient(resolvedModelId),
                   messages: [
                     { 
                       role: 'system', 
@@ -1714,8 +1717,10 @@ Provide the complete file content without any truncation. Include all necessary 
                     { role: 'user', content: completionPrompt }
                   ],
                   temperature: isGPT5 ? undefined : appConfig.ai.defaultTemperature,
-                  maxTokens: appConfig.ai.truncationRecoveryMaxTokens
-                });
+                };
+                // Set token limit
+                completionOptions.maxTokens = appConfig.ai.truncationRecoveryMaxTokens;
+                const completionResult = await streamText(completionOptions);
                 
                 // Get the full text from the stream
                 let completedContent = '';

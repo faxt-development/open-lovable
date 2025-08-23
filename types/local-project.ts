@@ -1,5 +1,4 @@
 // Global types for local project file management
-import { SandboxState } from './sandbox';
 
 export interface LocalProjectFile {
   content: string;
@@ -32,9 +31,6 @@ declare global {
   var activeProject: any;
   var localProjectState: LocalProjectState;
   var existingFiles: Set<string>;
-  
-  // These are deprecated and will be removed
-  var activeSandbox: any;
-  var sandboxState: SandboxState;
-  var sandboxData: any;
 }
+
+export {};
