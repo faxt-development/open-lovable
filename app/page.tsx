@@ -82,6 +82,9 @@ export default function LocalDevelopmentPage() {
     return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : appConfig.ai.defaultModel;
   });
 
+  // Feature flags
+  const enableWebScrape = false; // Disable Firecrawl/scrape-based flow; start in chat mode
+
   // Minimal stub to satisfy references; backend APIs handle actual creation
   const createProject = async (_silent?: boolean): Promise<void> => {
     // No-op stub for lint/type purposes; real creation occurs via API flows
@@ -90,7 +93,7 @@ export default function LocalDevelopmentPage() {
   const [urlOverlayVisible, setUrlOverlayVisible] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlStatus, setUrlStatus] = useState<string[]>([]);
-  const [showHomeScreen, setShowHomeScreen] = useState(true);
+  const [showHomeScreen, setShowHomeScreen] = useState(false);
   const [projectDataState, setProjectDataState] = useState<any>(null);
   const [devServerStatus, setDevServerStatus] = useState<string>('Not started');
   const [devServerStatusOk, setDevServerStatusOk] = useState<boolean>(false);
@@ -99,7 +102,7 @@ export default function LocalDevelopmentPage() {
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'generation' | 'preview'>('preview');
+  const [activeTab, setActiveTab] = useState<'generation' | 'preview'>('generation');
   const [showStyleSelector, setShowStyleSelector] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [showLoadingBackground, setShowLoadingBackground] = useState(false);
@@ -257,7 +260,7 @@ export default function LocalDevelopmentPage() {
   
   // Start capturing screenshot if URL is provided on mount (from home screen)
   useEffect(() => {
-    if (!showHomeScreen && homeUrlInput && !urlScreenshot && !isCapturingScreenshot) {
+    if (enableWebScrape && !showHomeScreen && homeUrlInput && !urlScreenshot && !isCapturingScreenshot) {
       let screenshotUrl = homeUrlInput.trim();
       if (!screenshotUrl.match(/^https?:\/\//i)) {
         screenshotUrl = 'https://' + screenshotUrl;

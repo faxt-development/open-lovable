@@ -206,3 +206,15 @@ export async function stopDevServer(projectName: string): Promise<{success: bool
     };
   }
 }
+
+/**
+ * Check if development server is running on a given port
+ */
+export async function isDevServerRunning(port: number = 3000): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync(`lsof -i :${port} -t`);
+    return Boolean(stdout.trim());
+  } catch {
+    return false;
+  }
+}
