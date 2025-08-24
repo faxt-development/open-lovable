@@ -9,7 +9,9 @@ export interface ConversationMessage {
     editedFiles?: string[]; // Files edited in this interaction
     addedPackages?: string[]; // Packages added in this interaction
     editType?: string; // Type of edit performed
-    sandboxId?: string; // Sandbox ID at time of message
+    projectName?: string; // Project name at time of message
+    projectId?: string; // Current project identifier (preferred)
+    sandboxId?: string; // Deprecated: legacy identifier for backward compatibility
   };
 }
 

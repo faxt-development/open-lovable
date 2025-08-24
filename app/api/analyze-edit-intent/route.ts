@@ -6,19 +6,55 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 import type { FileManifest } from '@/types/file-manifest';
+import { appConfig } from '@/config/app.config';
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+// Provider configuration based on environment variable
+const PROVIDER = process.env.AI_PROVIDER || 'auto';
 
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
+// Initialize only the selected model provider or auto-initialize based on available API keys
+let groq: ReturnType<typeof createGroq> | null = null;
+let anthropic: ReturnType<typeof createAnthropic> | null = null;
+let googleGenerativeAI: ReturnType<typeof createGoogleGenerativeAI> | null = null;
+let openai: ReturnType<typeof createOpenAI> | null = null;
 
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
+// Initialize providers based on configuration
+if (PROVIDER === 'groq' || (PROVIDER === 'auto' && process.env.GROQ_API_KEY)) {
+  groq = createGroq({
+    apiKey: process.env.GROQ_API_KEY,
+  });
+  console.log('[analyze-edit-intent] Initialized Groq provider');
+}
+
+if (PROVIDER === 'anthropic' || (PROVIDER === 'auto' && process.env.ANTHROPIC_API_KEY)) {
+  anthropic = createAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
+  });
+  console.log('[analyze-edit-intent] Initialized Anthropic provider');
+}
+
+if (PROVIDER === 'google' || (PROVIDER === 'auto' && process.env.GEMINI_API_KEY)) {
+  googleGenerativeAI = createGoogleGenerativeAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
+  console.log('[analyze-edit-intent] Initialized Google provider');
+}
+
+if (PROVIDER === 'openai' || (PROVIDER === 'auto' && process.env.OPENAI_API_KEY)) {
+  openai = createOpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+  console.log('[analyze-edit-intent] Initialized OpenAI provider');
+}
+
+// Debug: summarize provider and env detection (no secrets)
+console.log('[analyze-edit-intent] Provider mode:', PROVIDER);
+console.log('[analyze-edit-intent] Env keys present:', {
+  hasGroq: !!process.env.GROQ_API_KEY,
+  hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+  hasOpenAI: !!process.env.OPENAI_API_KEY,
+  hasGemini: !!process.env.GEMINI_API_KEY,
+  hasBedrockCreds: !!process.env.AWS_ACCESS_KEY_ID && !!process.env.AWS_SECRET_ACCESS_KEY,
 });
 
 // Schema for the AI's search plan - not file selection!
@@ -51,7 +87,10 @@ const searchPlanSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, manifest, model = 'openai/gpt-oss-20b' } = await request.json();
+    const body = await request.json();
+    const prompt: string = body.prompt;
+    const manifest: FileManifest = body.manifest;
+    const model: string = body.model || appConfig.ai.defaultModel;
     
     console.log('[analyze-edit-intent] Request received');
     console.log('[analyze-edit-intent] Prompt:', prompt);
@@ -96,17 +135,32 @@ export async function POST(request: NextRequest) {
     // Select the appropriate AI model based on the request
     let aiModel;
     if (model.startsWith('anthropic/')) {
+      if (!anthropic) {
+        return NextResponse.json({ error: 'Anthropic provider not initialized. Set AI_PROVIDER=anthropic or AI_PROVIDER=auto and provide ANTHROPIC_API_KEY' }, { status: 500 });
+      }
       aiModel = anthropic(model.replace('anthropic/', ''));
     } else if (model.startsWith('openai/')) {
       if (model.includes('gpt-oss')) {
+        if (!groq) {
+          return NextResponse.json({ error: 'Groq provider not initialized. Set AI_PROVIDER=groq or AI_PROVIDER=auto and provide GROQ_API_KEY' }, { status: 500 });
+        }
         aiModel = groq(model);
       } else {
+        if (!openai) {
+          return NextResponse.json({ error: 'OpenAI provider not initialized. Set AI_PROVIDER=openai or AI_PROVIDER=auto and provide OPENAI_API_KEY' }, { status: 500 });
+        }
         aiModel = openai(model.replace('openai/', ''));
       }
     } else if (model.startsWith('google/')) {
-      aiModel = createGoogleGenerativeAI(model.replace('google/', ''));
+      if (!googleGenerativeAI) {
+        return NextResponse.json({ error: 'Google provider not initialized. Set AI_PROVIDER=google or AI_PROVIDER=auto and provide GEMINI_API_KEY' }, { status: 500 });
+      }
+      aiModel = googleGenerativeAI(model.replace('google/', ''));
     } else {
       // Default to groq if model format is unclear
+      if (!groq) {
+        return NextResponse.json({ error: 'Groq provider not initialized. Set AI_PROVIDER=groq or AI_PROVIDER=auto and provide GROQ_API_KEY' }, { status: 500 });
+      }
       aiModel = groq(model);
     }
     

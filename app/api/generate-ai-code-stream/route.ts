@@ -1,32 +1,173 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'fs';
 import { createGroq } from '@ai-sdk/groq';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText } from 'ai';
-import type { SandboxState } from '@/types/sandbox';
+import { bedrockClient, BEDROCK_MODELS } from '@/lib/aws-bedrock';
+import type { ProjectState, ProjectFile } from '@/types/project';
 import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
 import { executeSearchPlan, formatSearchResultsForAI, selectTargetFile } from '@/lib/file-search-executor';
 import { FileManifest } from '@/types/file-manifest';
 import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+// Provider configuration based on environment variable
+const PROVIDER = process.env.AI_PROVIDER || 'auto';
 
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
+// Initialize only the selected model provider or auto-initialize based on available API keys
+let groq: ReturnType<typeof createGroq> | null = null;
+let anthropic: ReturnType<typeof createAnthropic> | null = null;
+let googleGenerativeAI: ReturnType<typeof createGoogleGenerativeAI> | null = null;
+let openai: ReturnType<typeof createOpenAI> | null = null;
 
-const googleGenerativeAI = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+// Initialize providers based on configuration
+if (PROVIDER === 'groq' || (PROVIDER === 'auto' && process.env.GROQ_API_KEY)) {
+  groq = createGroq({
+    apiKey: process.env.GROQ_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized Groq provider');
+}
 
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+if (PROVIDER === 'anthropic' || (PROVIDER === 'auto' && process.env.ANTHROPIC_API_KEY)) {
+  anthropic = createAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    baseURL: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
+  });
+  console.log('[generate-ai-code-stream] Initialized Anthropic provider');
+}
+
+if (PROVIDER === 'google' || (PROVIDER === 'auto' && process.env.GEMINI_API_KEY)) {
+  googleGenerativeAI = createGoogleGenerativeAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized Google provider');
+}
+
+if (PROVIDER === 'openai' || (PROVIDER === 'auto' && process.env.OPENAI_API_KEY)) {
+  openai = createOpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+  console.log('[generate-ai-code-stream] Initialized OpenAI provider');
+}
+
+// Initialize Bedrock client only if needed
+const useBedrock = PROVIDER === 'bedrock' || 
+  (PROVIDER === 'auto' && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+
+if (useBedrock) {
+  console.log('[generate-ai-code-stream] Initialized AWS Bedrock provider');
+}
+
+// Bedrock allowlist support (AWS requires explicit model access)
+function loadBedrockAllowList(): Set<string> {
+  const set = new Set<string>();
+  try {
+    // CSV from env
+    const csv = process.env.BEDROCK_ALLOWED_MODELS;
+    if (csv) {
+      csv.split(/[\s,]+/)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .forEach(id => set.add(id));
+    }
+    // Optional JSON file path
+    const path = process.env.BEDROCK_ALLOWED_MODELS_PATH;
+    if (path && fs.existsSync(path)) {
+      const raw = fs.readFileSync(path, 'utf-8');
+      const data = JSON.parse(raw);
+      const addId = (id: any) => {
+        if (typeof id === 'string' && id.trim()) set.add(id.trim());
+      };
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && typeof item === 'object') {
+            if ('modelId' in item) addId((item as any).modelId);
+            if ('inferenceProfileArn' in item) addId((item as any).inferenceProfileArn);
+            if ('modelArn' in item) addId((item as any).modelArn);
+          }
+          else if (typeof item === 'string') addId(item);
+        }
+      } else if (data && typeof data === 'object' && Array.isArray((data as any).modelSummaries)) {
+        for (const item of (data as any).modelSummaries) {
+          if (item?.modelId) addId(item.modelId);
+          if (item?.inferenceProfileArn) addId(item.inferenceProfileArn);
+          if (item?.modelArn) addId(item.modelArn);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[generate-ai-code-stream] Failed to load BEDROCK allowlist:', (e as Error).message);
+  }
+  return set;
+}
+
+const BEDROCK_ALLOWLIST = loadBedrockAllowList();
+
+// Optional mapping: modelId -> structured identifiers.
+// preferredId resolves to inferenceProfileArn if present, otherwise modelId.
+// Also carries the raw inferenceProfileArn and modelArn when available.
+function loadBedrockIdMap(): Map<string, { preferredId: string; inferenceProfileArn?: string; modelArn?: string }> {
+  const map = new Map<string, { preferredId: string; inferenceProfileArn?: string; modelArn?: string }>();
+  try {
+    const path = process.env.BEDROCK_ALLOWED_MODELS_PATH;
+    if (path && fs.existsSync(path)) {
+      const raw = fs.readFileSync(path, 'utf-8');
+      const data = JSON.parse(raw);
+      const add = (modelId?: any, profileArn?: any, modelArn?: any) => {
+        if (typeof modelId === 'string' && modelId.trim()) {
+          const cleanModelId = modelId.trim();
+          const cleanProfileArn = (typeof profileArn === 'string' && profileArn.trim()) ? profileArn.trim() : undefined;
+          const cleanModelArn = (typeof modelArn === 'string' && modelArn.trim()) ? modelArn.trim() : undefined;
+          map.set(cleanModelId, {
+            // Prefer inference profile ARN over model ARN over raw ID
+            preferredId: cleanProfileArn || cleanModelArn || cleanModelId,
+            inferenceProfileArn: cleanProfileArn,
+            modelArn: cleanModelArn,
+          });
+        }
+      };
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && typeof item === 'object') {
+            add((item as any).modelId, (item as any).inferenceProfileArn, (item as any).modelArn);
+          }
+        }
+      } else if (data && typeof data === 'object' && Array.isArray((data as any).modelSummaries)) {
+        for (const item of (data as any).modelSummaries) {
+          add(item?.modelId, item?.inferenceProfileArn, item?.modelArn);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[generate-ai-code-stream] Failed to load BEDROCK id map:', (e as Error).message);
+  }
+  return map;
+}
+
+const BEDROCK_ID_MAP = loadBedrockIdMap();
+
+// Model mapping for different providers (Bedrock added dynamically from allowlist below)
+const MODEL_MAPPING: Record<string, { provider: string; modelId: string }> = {
+  // OpenAI
+  'openai/gpt-4': { provider: 'openai', modelId: 'gpt-4' },
+  'openai/gpt-4-turbo': { provider: 'openai', modelId: 'gpt-4-turbo-preview' },
+  'openai/gpt-3.5-turbo': { provider: 'openai', modelId: 'gpt-3.5-turbo' },
+  
+  // Anthropic
+  'anthropic/claude-3-opus': { provider: 'anthropic', modelId: 'claude-3-opus-20240229' },
+  'anthropic/claude-3-sonnet': { provider: 'anthropic', modelId: 'claude-3-sonnet-20240229' },
+  'anthropic/claude-3-haiku': { provider: 'anthropic', modelId: 'claude-3-haiku-20240307' },
+  
+  // Groq
+  'groq/llama3-70b': { provider: 'groq', modelId: 'llama3-70b-8192' },
+  'groq/llama3-8b': { provider: 'groq', modelId: 'llama3-8b-8192' },
+  'groq/mixtral-8x7b': { provider: 'groq', modelId: 'mixtral-8x7b-32768' },
+  
+  // Google
+  'google/gemini-pro': { provider: 'google', modelId: 'gemini-pro' },
+};
 
 // Helper function to analyze user preferences from conversation history
 function analyzeUserPreferences(messages: ConversationMessage[]): {
@@ -68,21 +209,83 @@ function analyzeUserPreferences(messages: ConversationMessage[]): {
 }
 
 declare global {
-  var sandboxState: SandboxState;
+  var projectState: ProjectState;
   var conversationState: ConversationState | null;
+}
+
+// Helper function to get the appropriate model provider
+function getModelProvider(modelId: string) {
+  // Resolve config from static map or infer Bedrock when in Bedrock mode
+  let modelConfig = MODEL_MAPPING[modelId] || (useBedrock ? { provider: 'bedrock', modelId } : undefined as any);
+  if (!modelConfig) {
+    throw new Error(`Unsupported model: ${modelId}`);
+  }
+
+  switch (modelConfig.provider) {
+    case 'openai':
+      if (!openai) throw new Error('OpenAI provider not initialized. Set AI_PROVIDER=openai or AI_PROVIDER=auto and provide OPENAI_API_KEY');
+      return openai(modelConfig.modelId);
+    case 'anthropic':
+      if (!anthropic) throw new Error('Anthropic provider not initialized. Set AI_PROVIDER=anthropic or AI_PROVIDER=auto and provide ANTHROPIC_API_KEY');
+      return anthropic(modelConfig.modelId);
+    case 'groq':
+      if (!groq) throw new Error('Groq provider not initialized. Set AI_PROVIDER=groq or AI_PROVIDER=auto and provide GROQ_API_KEY');
+      return groq(modelConfig.modelId);
+    case 'google':
+      if (!googleGenerativeAI) throw new Error('Google provider not initialized. Set AI_PROVIDER=google or AI_PROVIDER=auto and provide GEMINI_API_KEY');
+      return googleGenerativeAI(modelConfig.modelId);
+    case 'bedrock':
+      if (!useBedrock) throw new Error('AWS Bedrock not initialized. Set AI_PROVIDER=bedrock or AI_PROVIDER=auto and provide AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
+      // Use inference profile ARN if available
+      const mapping = BEDROCK_ID_MAP.get(modelConfig.modelId);
+      const resolvedId = mapping?.preferredId || modelConfig.modelId;
+      const modelArn = mapping?.modelArn;
+      console.log('[generate-ai-code-stream] modelArn:', modelArn);
+      return {
+        async *streamText(options: any) {
+          const stream = bedrockClient.streamText({
+            modelId: resolvedId,
+            messages: options.messages,
+            maxTokens: options.maxTokens,
+            temperature: options.temperature,
+            topP: options.topP,
+          });
+
+          for await (const chunk of stream) {
+            yield { text: chunk.text };
+          }
+        }
+      };
+    default:
+      throw new Error(`Unsupported provider: ${modelConfig.provider}`);
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false } = await request.json();
+    const body = await request.json();
+    const prompt: string = body.prompt;
+    const context = body.context;
+    const isEdit: boolean = body.isEdit ?? false;
+    const model: string = body.model || appConfig.ai.defaultModel;
     
     console.log('[generate-ai-code-stream] Received request:');
+    console.log('[generate-ai-code-stream] - model:', model);
     console.log('[generate-ai-code-stream] - prompt:', prompt);
     console.log('[generate-ai-code-stream] - isEdit:', isEdit);
-    console.log('[generate-ai-code-stream] - context.sandboxId:', context?.sandboxId);
+    console.log('[generate-ai-code-stream] - context.projectId:', (context as any)?.projectId || (context as any)?.sandboxId);
     console.log('[generate-ai-code-stream] - context.currentFiles:', context?.currentFiles ? Object.keys(context.currentFiles) : 'none');
     console.log('[generate-ai-code-stream] - currentFiles count:', context?.currentFiles ? Object.keys(context.currentFiles).length : 0);
-    
+    // Debug: provider/env summary (no secrets)
+    console.log('[generate-ai-code-stream] Provider mode:', PROVIDER);
+    console.log('[generate-ai-code-stream] Env keys present:', {
+      hasGroq: !!process.env.GROQ_API_KEY,
+      hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+      hasOpenAI: !!process.env.OPENAI_API_KEY,
+      hasGemini: !!process.env.GEMINI_API_KEY,
+      hasBedrockCreds: !!process.env.AWS_ACCESS_KEY_ID && !!process.env.AWS_SECRET_ACCESS_KEY,
+    });
+
     // Initialize conversation state if not exists
     if (!global.conversationState) {
       global.conversationState = {
@@ -105,7 +308,7 @@ export async function POST(request: NextRequest) {
       content: prompt,
       timestamp: Date.now(),
       metadata: {
-        sandboxId: context?.sandboxId
+        projectId: (context as any)?.projectId || (context as any)?.sandboxId
       }
     };
     global.conversationState.context.messages.push(userMessage);
@@ -137,6 +340,35 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
     
+    // Derive model configuration.
+    // Bedrock models come from user JSON/ENV and may NOT be prefixed with 'bedrock/'.
+    // If we're in Bedrock mode (per AI_PROVIDER/env) and the model isn't in the static map,
+    // treat the provided string as a Bedrock modelId.
+    let modelConfig = MODEL_MAPPING[model];
+    if (!modelConfig && useBedrock) {
+      modelConfig = { provider: 'bedrock', modelId: model };
+    }
+    if (!modelConfig) {
+      console.error('[generate-ai-code-stream] Unsupported model requested:', model);
+      return NextResponse.json({
+        success: false,
+        error: `Unsupported model: ${model}`
+      }, { status: 400 });
+    }
+    // If provider is Bedrock, enforce allowlist if present and map to inference profile if available
+    if (modelConfig.provider === 'bedrock' && useBedrock) {
+      const originalId = modelConfig.modelId;
+      const resolvedId = BEDROCK_ID_MAP.get(originalId)?.preferredId || originalId;
+      modelConfig = { ...modelConfig, modelId: resolvedId };
+      if (BEDROCK_ALLOWLIST.size > 0 && !BEDROCK_ALLOWLIST.has(originalId) && !BEDROCK_ALLOWLIST.has(resolvedId)) {
+        console.error('[generate-ai-code-stream] Bedrock model not allowed by env:', modelConfig.modelId);
+        return NextResponse.json({
+          success: false,
+          error: `Bedrock model not allowed: ${originalId} (${resolvedId}). Add it to BEDROCK_ALLOWED_MODELS or BEDROCK_ALLOWED_MODELS_PATH.`
+        }, { status: 403 });
+      }
+    }
+    
     // Create a stream for real-time updates
     const encoder = new TextEncoder();
     const stream = new TransformStream();
@@ -154,7 +386,7 @@ export async function POST(request: NextRequest) {
         // Send initial status
         await sendProgress({ type: 'status', message: 'Initializing AI...' });
         
-        // No keep-alive needed - sandbox provisioned for 10 minutes
+        // No keep-alive needed - project provisioned for 10 minutes
         
         // Check if we have a file manifest for edit mode
         let editContext = null;
@@ -162,15 +394,15 @@ export async function POST(request: NextRequest) {
         
         if (isEdit) {
           console.log('[generate-ai-code-stream] Edit mode detected - starting agentic search workflow');
-          console.log('[generate-ai-code-stream] Has fileCache:', !!global.sandboxState?.fileCache);
-          console.log('[generate-ai-code-stream] Has manifest:', !!global.sandboxState?.fileCache?.manifest);
+          console.log('[generate-ai-code-stream] Has fileCache:', !!global.projectState?.fileCache);
+          console.log('[generate-ai-code-stream] Has manifest:', !!global.projectState?.fileCache?.manifest);
           
-          const manifest: FileManifest | undefined = global.sandboxState?.fileCache?.manifest;
+          const manifest: FileManifest | undefined = global.projectState?.fileCache?.manifest;
           
           if (manifest) {
             await sendProgress({ type: 'status', message: '🔍 Creating search plan...' });
             
-            const fileContents = global.sandboxState.fileCache.files;
+            const fileContents: Record<string, ProjectFile> = global.projectState?.fileCache?.files || {};
             console.log('[generate-ai-code-stream] Files available for search:', Object.keys(fileContents).length);
             
             // STEP 1: Get search plan from AI
@@ -193,7 +425,7 @@ export async function POST(request: NextRequest) {
                 // STEP 2: Execute the search plan
                 const searchExecution = executeSearchPlan(searchPlan, 
                   Object.fromEntries(
-                    Object.entries(fileContents).map(([path, data]) => [
+                    (Object.entries<ProjectFile>(fileContents) as [string, ProjectFile][]) .map(([path, data]) => [
                       path.startsWith('/') ? path : `/home/user/app/${path}`,
                       data.content
                     ])
@@ -299,13 +531,13 @@ User request: "${prompt}"`;
           } else if (!manifest) {
             console.log('[generate-ai-code-stream] WARNING: No manifest available for edit mode!');
             
-            // Try to fetch files from sandbox if we have one
-            if (global.activeSandbox) {
-              await sendProgress({ type: 'status', message: 'Fetching current files from sandbox...' });
+            // Try to fetch files from project if we have one
+            if (global.activeProject) {
+              await sendProgress({ type: 'status', message: 'Fetching current files from project...' });
               
               try {
-                // Fetch files directly from sandbox
-                const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
+                // Fetch files directly from project
+                const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-project-files`, {
                   method: 'GET',
                   headers: { 'Content-Type': 'application/json' }
                 });
@@ -314,7 +546,7 @@ User request: "${prompt}"`;
                   const filesData = await filesResponse.json();
                   
                   if (filesData.success && filesData.manifest) {
-                    console.log('[generate-ai-code-stream] Successfully fetched manifest from sandbox');
+                    console.log('[generate-ai-code-stream] Successfully fetched manifest from project');
                     const manifest = filesData.manifest;
                     
                     // Now try to analyze edit intent with the fetched manifest
@@ -331,7 +563,7 @@ User request: "${prompt}"`;
                         
                         // For now, fall back to keyword search since we don't have file contents for search execution
                         // This path happens when no manifest was initially available
-                        let targetFiles = [];
+                        let targetFiles: string[] = [];
                         if (!searchPlan || searchPlan.searchTerms.length === 0) {
                           console.warn('[generate-ai-code-stream] No target files after fetch, searching for relevant files');
                           
@@ -457,20 +689,20 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                       console.error('[generate-ai-code-stream] Error analyzing intent after fetch:', error);
                     }
                   } else {
-                    console.error('[generate-ai-code-stream] Failed to get manifest from sandbox files');
+                    console.error('[generate-ai-code-stream] Failed to get manifest from project files');
                   }
                 } else {
-                  console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', filesResponse.status);
+                  console.error('[generate-ai-code-stream] Failed to fetch project files:', filesResponse.status);
                 }
               } catch (error) {
-                console.error('[generate-ai-code-stream] Error fetching sandbox files:', error);
+                console.error('[generate-ai-code-stream] Error fetching project files:', error);
                 await sendProgress({ 
                   type: 'warning', 
                   message: 'Could not analyze existing files for targeted edits. Proceeding with general edit mode.'
                 });
               }
             } else {
-              console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
+              console.log('[generate-ai-code-stream] No active project to fetch files from');
               await sendProgress({ 
                 type: 'warning', 
                 message: 'No existing files found. Consider generating initial code first.'
@@ -703,7 +935,7 @@ IMPORTANT: You have access to the full conversation context including:
 When the user references "the app", "the website", or "the site" without specifics, refer to:
 1. The most recently scraped website in the context
 2. The current project name in the context
-3. The files currently in the sandbox
+3. The files currently in the project
 
 If you see scraped websites in the context, you're working on a clone/recreation of that site.
 
@@ -902,8 +1134,9 @@ CRITICAL: When files are provided in the context:
         if (context) {
           const contextParts = [];
           
-          if (context.sandboxId) {
-            contextParts.push(`Current sandbox ID: ${context.sandboxId}`);
+          if ((context as any).projectId || (context as any).sandboxId) {
+            const pid = (context as any).projectId || (context as any).sandboxId;
+            contextParts.push(`Current project ID: ${pid}`);
           }
           
           if (context.structure) {
@@ -911,21 +1144,21 @@ CRITICAL: When files are provided in the context:
           }
           
           // Use backend file cache instead of frontend-provided files
-          let backendFiles = global.sandboxState?.fileCache?.files || {};
+          let backendFiles: Record<string, ProjectFile> = global.projectState?.fileCache?.files || {};
           let hasBackendFiles = Object.keys(backendFiles).length > 0;
           
           console.log('[generate-ai-code-stream] Backend file cache status:');
-          console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
-          console.log('[generate-ai-code-stream] - Has fileCache:', !!global.sandboxState?.fileCache);
+          console.log('[generate-ai-code-stream] - Has projectState:', !!global.projectState);
+          console.log('[generate-ai-code-stream] - Has fileCache:', !!global.projectState?.fileCache);
           console.log('[generate-ai-code-stream] - File count:', Object.keys(backendFiles).length);
-          console.log('[generate-ai-code-stream] - Has manifest:', !!global.sandboxState?.fileCache?.manifest);
+          console.log('[generate-ai-code-stream] - Has manifest:', !!global.projectState?.fileCache?.manifest);
           
-          // If no backend files and we're in edit mode, try to fetch from sandbox
-          if (!hasBackendFiles && isEdit && (global.activeSandbox || context?.sandboxId)) {
-            console.log('[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...');
+          // If no backend files and we're in edit mode, try to fetch from project
+          if (!hasBackendFiles && isEdit && (global.activeProject || (context as any)?.projectId || (context as any)?.sandboxId)) {
+            console.log('[generate-ai-code-stream] No backend files, attempting to fetch from project...');
             
             try {
-              const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
+              const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-project-files`, {
                 method: 'GET',
                 headers: { 'Content-Type': 'application/json' }
               });
@@ -933,36 +1166,36 @@ CRITICAL: When files are provided in the context:
               if (filesResponse.ok) {
                 const filesData = await filesResponse.json();
                 if (filesData.success && filesData.files) {
-                  console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from sandbox');
+                  console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from project');
                   
-                  // Initialize sandboxState if needed
-                  if (!global.sandboxState) {
-                    global.sandboxState = {
+                  // Initialize projectState if needed
+                  if (!global.projectState) {
+                    global.projectState = {
                       fileCache: {
                         files: {},
                         lastSync: Date.now(),
-                        sandboxId: context?.sandboxId || 'unknown'
+                        projectId: (context as any)?.projectId || (context as any)?.sandboxId || 'unknown'
                       }
                     } as any;
-                  } else if (!global.sandboxState.fileCache) {
-                    global.sandboxState.fileCache = {
+                  } else if (!global.projectState.fileCache) {
+                    global.projectState.fileCache = {
                       files: {},
                       lastSync: Date.now(),
-                      sandboxId: context?.sandboxId || 'unknown'
+                      projectId: (context as any)?.projectId || (context as any)?.sandboxId || 'unknown'
                     };
                   }
                   
                   // Store files in cache
                   for (const [path, content] of Object.entries(filesData.files)) {
                     const normalizedPath = path.replace('/home/user/app/', '');
-                    global.sandboxState.fileCache.files[normalizedPath] = {
+                    global.projectState.fileCache!.files[normalizedPath] = {
                       content: content as string,
                       lastModified: Date.now()
                     };
                   }
                   
                   if (filesData.manifest) {
-                    global.sandboxState.fileCache.manifest = filesData.manifest;
+                    global.projectState.fileCache!.manifest = filesData.manifest;
                     
                     // Now try to analyze edit intent with the fetched manifest
                     if (!editContext) {
@@ -993,13 +1226,13 @@ CRITICAL: When files are provided in the context:
                   }
                   
                   // Update variables
-                  backendFiles = global.sandboxState.fileCache.files;
+                  backendFiles = global.projectState.fileCache!.files;
                   hasBackendFiles = Object.keys(backendFiles).length > 0;
                   console.log('[generate-ai-code-stream] Updated backend cache with fetched files');
                 }
               }
             } catch (error) {
-              console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', error);
+              console.error('[generate-ai-code-stream] Failed to fetch project files:', error);
             }
           }
           
@@ -1011,8 +1244,8 @@ CRITICAL: When files are provided in the context:
               contextParts.push(`\n${editContext.systemPrompt || enhancedSystemPrompt}\n`);
               
               // Get contents of primary and context files
-              const primaryFileContents = await getFileContents(editContext.primaryFiles, global.sandboxState!.fileCache!.manifest!);
-              const contextFileContents = await getFileContents(editContext.contextFiles, global.sandboxState!.fileCache!.manifest!);
+              const primaryFileContents = await getFileContents(editContext.primaryFiles, global.projectState!.fileCache!.manifest!);
+              const contextFileContents = await getFileContents(editContext.contextFiles, global.projectState!.fileCache!.manifest!);
               
               // Format files for AI
               const formattedFiles = formatFilesForAI(primaryFileContents, contextFileContents);
@@ -1026,7 +1259,7 @@ CRITICAL: When files are provided in the context:
               contextParts.push('\nYou MUST analyze the user request and determine which specific file(s) to edit.');
               contextParts.push('\nCurrent project files (DO NOT regenerate all of these):');
               
-              const fileEntries = Object.entries(backendFiles);
+              const fileEntries = Object.entries<ProjectFile>(backendFiles) as [string, ProjectFile][];
               console.log(`[generate-ai-code-stream] Using backend cache: ${fileEntries.length} files`);
               
               // Show file list first for reference
@@ -1151,18 +1384,33 @@ CRITICAL: When files are provided in the context:
         // Track packages that need to be installed
         const packagesToInstall: string[] = [];
         
-        // Determine which provider to use based on model
-        const isAnthropic = model.startsWith('anthropic/');
-        const isGoogle = model.startsWith('google/');
-        const isOpenAI = model.startsWith('openai/gpt-5');
-        const modelProvider = isAnthropic ? anthropic : (isOpenAI ? openai : (isGoogle ? googleGenerativeAI : groq));
-        const actualModel = isAnthropic ? model.replace('anthropic/', '') : 
-                           (model === 'openai/gpt-5') ? 'gpt-5' :
-                           (isGoogle ? model.replace('google/', '') : model);
-
-        // Make streaming API call with appropriate provider
+        // Resolve provider and model (Bedrock-aware)
+        let modelConfig = MODEL_MAPPING[model] || (useBedrock ? { provider: 'bedrock', modelId: model } : undefined as any);
+        if (!modelConfig) {
+          throw new Error(`Unsupported model: ${model}`);
+        }
+        let modelInstance: any = null;
+        const isBedrockProvider = modelConfig.provider === 'bedrock';
+        if (isBedrockProvider) {
+          // Map to inference profile ARN if present
+          const originalId = modelConfig.modelId;
+          const resolvedId = BEDROCK_ID_MAP.get(originalId)?.preferredId || originalId;
+          modelConfig = { ...modelConfig, modelId: resolvedId };
+        }
+        if (!isBedrockProvider) {
+          try {
+            modelInstance = getModelProvider(model);
+          } catch (error) {
+            console.error(`[generate-ai-code-stream] Error getting model provider:`, error);
+            return NextResponse.json(
+              { error: `Error initializing model provider: ${error instanceof Error ? (error as Error).message : String(error)}` },
+              { status: 400 }
+            );
+          }
+        }
+        
         const streamOptions: any = {
-          model: modelProvider(actualModel),
+          model: modelInstance,
           messages: [
             { 
               role: 'system', 
@@ -1235,6 +1483,7 @@ It's better to have 3 complete files than 10 incomplete files.`
         }
         
         // Add reasoning effort for GPT-5 models
+        const isOpenAI = openai !== null && model.includes('openai');
         if (isOpenAI) {
           streamOptions.experimental_providerMetadata = {
             openai: {
@@ -1243,7 +1492,21 @@ It's better to have 3 complete files than 10 incomplete files.`
           };
         }
         
-        const result = await streamText(streamOptions);
+        let result: any;
+        if (isBedrockProvider) {
+          // Use custom Bedrock streaming client to conform to AI SDK v5 expectations
+          const brStream = bedrockClient.streamText({
+            modelId: modelConfig.modelId,
+            messages: streamOptions.messages,
+            maxTokens: streamOptions.maxTokens,
+            temperature: streamOptions.temperature,
+            topP: streamOptions.topP,
+          });
+          // Adapt to the same interface used below
+          result = { textStream: brStream };
+        } else {
+          result = await streamText(streamOptions);
+        }
         
         // Stream the response and parse in real-time
         let generatedCode = '';
@@ -1259,7 +1522,12 @@ It's better to have 3 complete files than 10 incomplete files.`
         
         // Stream the response and parse for packages in real-time
         for await (const textPart of result.textStream) {
-          const text = textPart || '';
+          const text = typeof textPart === 'string'
+            ? textPart
+            : (textPart && typeof (textPart as any).text === 'string'
+              ? (textPart as any).text
+              : '');
+          if (!text) continue;
           generatedCode += text;
           currentFile += text;
           
@@ -1267,7 +1535,7 @@ It's better to have 3 complete files than 10 incomplete files.`
           const searchText = tagBuffer + text;
           
           // Log streaming chunks to console
-          process.stdout.write(text);
+          try { process.stdout.write(text); } catch {}
           
           // Check if we're entering or leaving a tag
           const hasOpenTag = /<(file|package|packages|explanation|command|structure|template)\b/.test(text);
@@ -1594,8 +1862,15 @@ Provide the complete file content without any truncation. Include all necessary 
                   completionClient = groq;
                 }
                 
-                const completionResult = await streamText({
-                  model: completionClient(modelMapping[model] || model),
+                // Make sure the completion client exists before using it
+                if (!completionClient) {
+                  throw new Error(`Provider for model ${model} is not initialized. Check your AI_PROVIDER setting.`);
+                }
+                
+                const resolvedModelId = MODEL_MAPPING[model]?.modelId || model;
+                const isGPT5 = /gpt-5/i.test(resolvedModelId);
+                const completionOptions: any = {
+                  model: completionClient(resolvedModelId),
                   messages: [
                     { 
                       role: 'system', 
@@ -1604,8 +1879,10 @@ Provide the complete file content without any truncation. Include all necessary 
                     { role: 'user', content: completionPrompt }
                   ],
                   temperature: isGPT5 ? undefined : appConfig.ai.defaultTemperature,
-                  maxTokens: appConfig.ai.truncationRecoveryMaxTokens
-                });
+                };
+                // Set token limit
+                completionOptions.maxTokens = appConfig.ai.truncationRecoveryMaxTokens;
+                const completionResult = await streamText(completionOptions);
                 
                 // Get the full text from the stream
                 let completedContent = '';

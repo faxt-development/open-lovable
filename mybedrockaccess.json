@@ -1,0 +1,68 @@
+[
+    {
+        "modelArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.deepseek.r1-v1:0",
+        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.deepseek.r1-v1:0",
+        "modelId": "deepseek.r1-v1:0",
+        "modelName": "DeepSeek-R1",
+        "providerName": "DeepSeek",
+        "inputModalities": [
+            "TEXT"
+        ],
+        "outputModalities": [
+            "TEXT"
+        ],
+        "responseStreamingSupported": true,
+        "customizationsSupported": [],
+        "inferenceTypesSupported": [
+            "INFERENCE_PROFILE"
+        ],
+        "modelLifecycle": {
+            "status": "ACTIVE"
+        }
+    },
+    {
+        "modelArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "modelId": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "modelName": "Claude 3.7 Sonnet",
+        "providerName": "Anthropic",
+        "inputModalities": [
+            "TEXT",
+            "IMAGE"
+        ],
+        "outputModalities": [
+            "TEXT"
+        ],
+        "responseStreamingSupported": true,
+        "customizationsSupported": [],
+        "inferenceTypesSupported": [
+            "INFERENCE_PROFILE"
+        ],
+        "modelLifecycle": {
+            "status": "ACTIVE"
+        }
+    },
+    {
+        "modelArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.amazon.nova-pro-v1:0",
+        "inferenceProfileArn": "arn:aws:bedrock:us-east-1:629811581977:inference-profile/us.amazon.nova-pro-v1:0",
+        "modelId": "amazon.nova-pro-v1:0:24k",
+        "modelName": "Nova Pro",
+        "providerName": "Amazon",
+        "inputModalities": [
+            "TEXT",
+            "IMAGE",
+            "VIDEO"
+        ],
+        "outputModalities": [
+            "TEXT"
+        ],
+        "responseStreamingSupported": true,
+        "customizationsSupported": [],
+        "inferenceTypesSupported": [
+            "PROVISIONED"
+        ],
+        "modelLifecycle": {
+            "status": "ACTIVE"
+        }
+    }
+]

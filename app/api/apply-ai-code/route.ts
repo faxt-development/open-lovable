@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { SandboxState } from '@/types/sandbox';
+import type { ProjectState } from '@/types/project';
 import type { ConversationState } from '@/types/conversation';
 
 declare global {
@@ -127,14 +127,14 @@ function parseAIResponse(response: string): ParsedResponse {
 }
 
 declare global {
-  var activeSandbox: any;
+  var activeProject: any;
   var existingFiles: Set<string>;
-  var sandboxState: SandboxState;
+  var projectState: ProjectState;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { response, isEdit = false, packages = [] } = await request.json();
+    const { response, isEdit = false, packages = [], model: bodyModel } = await request.json();
     
     if (!response) {
       return NextResponse.json({
@@ -150,8 +150,8 @@ export async function POST(request: NextRequest) {
       global.existingFiles = new Set<string>();
     }
     
-    // If no active sandbox, just return parsed results
-    if (!global.activeSandbox) {
+    // If no active project, just return parsed results
+    if (!global.activeProject) {
       return NextResponse.json({
         success: true,
         results: {
@@ -163,12 +163,12 @@ export async function POST(request: NextRequest) {
         explanation: parsed.explanation,
         structure: parsed.structure,
         parsedFiles: parsed.files,
-        message: `Parsed ${parsed.files.length} files successfully. Create a sandbox to apply them.`
+        message: `Parsed ${parsed.files.length} files successfully. Create a project to apply them.`
       });
     }
     
-    // Apply to active sandbox
-    console.log('[apply-ai-code] Applying code to sandbox...');
+    // Apply to active project
+    console.log('[apply-ai-code] Applying code to project...');
     console.log('[apply-ai-code] Is edit mode:', isEdit);
     console.log('[apply-ai-code] Files to write:', parsed.files.map(f => f.path));
     console.log('[apply-ai-code] Existing files:', Array.from(global.existingFiles));
@@ -339,13 +339,13 @@ export async function POST(request: NextRequest) {
         console.log(`[apply-ai-code] Writing file using E2B files API: ${fullPath}`);
         
         try {
-          // Use the correct E2B API - sandbox.files.write()
-          await global.activeSandbox.files.write(fullPath, fileContent);
+          // Use the correct E2B API - project.files.write()
+          await global.activeProject.files.write(fullPath, fileContent);
           console.log(`[apply-ai-code] Successfully wrote file: ${fullPath}`);
           
           // Update file cache
-          if (global.sandboxState?.fileCache) {
-            global.sandboxState.fileCache.files[normalizedPath] = {
+          if (global.projectState?.fileCache) {
+            global.projectState.fileCache.files[normalizedPath] = {
               content: fileContent,
               lastModified: Date.now()
             };
@@ -423,7 +423,7 @@ ${imports}
 function App() {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-8">
-      ${mainComponentName ? `<${mainComponentName} />` : '<div className="text-center">\n        <h1 className="text-4xl font-bold mb-4">Welcome to your React App</h1>\n        <p className="text-gray-400">Your components have been created but need to be added here.</p>\n      </div>'}
+      ${mainComponentName ? `<${mainComponentName} />` : '<div className="text-center">\n        <h1 className="text-4xl font-bold mb-4">Welcome to your React Project</h1>\n        <p className="text-gray-400">Your components have been created but need to be added here.</p>\n      </div>'}
       {/* Generated components: ${componentFiles.map(f => f.path).join(', ')} */}
     </div>
   );
@@ -432,7 +432,7 @@ function App() {
 export default App;`;
       
       try {
-        await global.activeSandbox.runCode(`
+        await global.activeProject.runCode(`
 file_path = "/home/user/app/src/App.jsx"
 file_content = """${appContent.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"""
 
@@ -459,7 +459,7 @@ print(f"Auto-generated: {file_path}")
       
       if (!isEdit && !indexCssInParsed && !indexCssExists) {
         try {
-          await global.activeSandbox.runCode(`
+          await global.activeProject.runCode(`
 file_path = "/home/user/app/src/index.css"
 file_content = """@tailwind base;
 @tailwind components;
@@ -500,7 +500,7 @@ print(f"Auto-generated: {file_path}")
     // Execute commands
     for (const cmd of parsed.commands) {
       try {
-        await global.activeSandbox.runCode(`
+        await global.activeProject.runCode(`
 import subprocess
 os.chdir('/home/user/app')
 result = subprocess.run(${JSON.stringify(cmd.split(' '))}, capture_output=True, text=True)
@@ -574,6 +574,10 @@ if result.stderr:
       // Automatically generate missing components
       try {
         console.log('[apply-ai-code] Auto-generating missing components...');
+        // Determine model precedence: body -> header -> env -> default
+        const headerModel = request.headers.get('x-model') || request.headers.get('X-Model');
+        const envModel = process.env.NEXT_PUBLIC_DEFAULT_MODEL || process.env.AI_MODEL;
+        const selectedModel = bodyModel || headerModel || envModel || 'claude-sonnet-4-20250514';
         
         const autoCompleteResponse = await fetch(
           `${request.nextUrl.origin}/api/auto-complete-components`,
@@ -582,7 +586,7 @@ if result.stderr:
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               missingImports,
-              model: 'claude-sonnet-4-20250514'
+              model: selectedModel
             })
           }
         );

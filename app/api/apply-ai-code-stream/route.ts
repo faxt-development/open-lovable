@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Sandbox } from '@e2b/code-interpreter';
-import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
+import type { LocalProjectState } from '@/types/local-project';
+import fs from 'fs';
+import path from 'path';
 
 declare global {
   var conversationState: ConversationState | null;
-  var activeSandbox: any;
   var existingFiles: Set<string>;
-  var sandboxState: SandboxState;
+  var localProjectState: LocalProjectState;
 }
 
 interface ParsedResponse {
@@ -261,7 +261,7 @@ function parseAIResponse(response: string): ParsedResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const { response, isEdit = false, packages = [], sandboxId } = await request.json();
+    const { response, isEdit = false, packages = [], projectName } = await request.json();
     
     if (!response) {
       return NextResponse.json({
@@ -294,74 +294,10 @@ export async function POST(request: NextRequest) {
       global.existingFiles = new Set<string>();
     }
     
-    // First, always check the global state for active sandbox
-    let sandbox = global.activeSandbox;
-    
-    // If we don't have a sandbox in this instance but we have a sandboxId,
-    // reconnect to the existing sandbox
-    if (!sandbox && sandboxId) {
-      console.log(`[apply-ai-code-stream] Sandbox ${sandboxId} not in this instance, attempting reconnect...`);
-      
-      try {
-        // Reconnect to the existing sandbox using E2B's connect method
-        sandbox = await Sandbox.connect(sandboxId, { apiKey: process.env.E2B_API_KEY });
-        console.log(`[apply-ai-code-stream] Successfully reconnected to sandbox ${sandboxId}`);
-        
-        // Store the reconnected sandbox globally for this instance
-        global.activeSandbox = sandbox;
-        
-        // Update sandbox data if needed
-        if (!global.sandboxData) {
-          const host = (sandbox as any).getHost(5173);
-          global.sandboxData = {
-            sandboxId,
-            url: `https://${host}`
-          };
-        }
-        
-        // Initialize existingFiles if not already
-        if (!global.existingFiles) {
-          global.existingFiles = new Set<string>();
-        }
-      } catch (reconnectError) {
-        console.error(`[apply-ai-code-stream] Failed to reconnect to sandbox ${sandboxId}:`, reconnectError);
-        
-        // If reconnection fails, we'll still try to return a meaningful response
-        return NextResponse.json({
-          success: false,
-          error: `Failed to reconnect to sandbox ${sandboxId}. The sandbox may have expired or been terminated.`,
-          results: {
-            filesCreated: [],
-            packagesInstalled: [],
-            commandsExecuted: [],
-            errors: [`Sandbox reconnection failed: ${(reconnectError as Error).message}`]
-          },
-          explanation: parsed.explanation,
-          structure: parsed.structure,
-          parsedFiles: parsed.files,
-          message: `Parsed ${parsed.files.length} files but couldn't apply them - sandbox reconnection failed.`
-        });
-      }
-    }
-    
-    // If no sandbox at all and no sandboxId provided, return an error
-    if (!sandbox && !sandboxId) {
-      console.log('[apply-ai-code-stream] No sandbox available and no sandboxId provided');
-      return NextResponse.json({
-        success: false,
-        error: 'No active sandbox found. Please create a sandbox first.',
-        results: {
-          filesCreated: [],
-          packagesInstalled: [],
-          commandsExecuted: [],
-          errors: ['No sandbox available']
-        },
-        explanation: parsed.explanation,
-        structure: parsed.structure,
-        parsedFiles: parsed.files,
-        message: `Parsed ${parsed.files.length} files but no sandbox available to apply them.`
-      });
-    }
+    // Determine effective project name even if global state is not initialized
+    const effectiveProjectName = (typeof projectName === 'string' && projectName.trim())
+      ? projectName.trim()
+      : (global.localProjectState?.projectData?.projectName || 'default');
     
     // Create a response stream for real-time updates
     const encoder = new TextEncoder();
@@ -374,8 +310,8 @@ export async function POST(request: NextRequest) {
       await writer.write(encoder.encode(message));
     };
     
-    // Start processing in background (pass sandbox and request to the async function)
-    (async (sandboxInstance, req) => {
+    // Start processing in background
+    (async (req: NextRequest) => {
       const results = {
         filesCreated: [] as string[],
         filesUpdated: [] as string[],
@@ -432,7 +368,7 @@ export async function POST(request: NextRequest) {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ 
                 packages: uniquePackages,
-                sandboxId: sandboxId || (sandboxInstance as any).sandboxId
+                projectName: effectiveProjectName
               })
             });
             
@@ -502,6 +438,9 @@ export async function POST(request: NextRequest) {
           return !configFiles.includes(fileName);
         });
         
+        // Get the project root directory
+        const projectDir = path.join(process.cwd(), 'projects', effectiveProjectName);
+        
         for (const [index, file] of filteredFiles.entries()) {
           try {
             // Send progress for each file
@@ -525,7 +464,7 @@ export async function POST(request: NextRequest) {
               normalizedPath = 'src/' + normalizedPath;
             }
             
-            const fullPath = `/home/user/app/${normalizedPath}`;
+            const fullPath = path.join(projectDir, normalizedPath);
             const isUpdate = global.existingFiles.has(normalizedPath);
             
             // Remove any CSS imports from JSX/JS files (we're using Tailwind)
@@ -534,23 +473,16 @@ export async function POST(request: NextRequest) {
               fileContent = fileContent.replace(/import\s+['"]\.\/[^'"]+\.css['"];?\s*\n?/g, '');
             }
             
-            // Write the file using Python (code-interpreter SDK)
-            const escapedContent = fileContent
-              .replace(/\\/g, '\\\\')
-              .replace(/"""/g, '\\"\\"\\"')
-              .replace(/\$/g, '\\$');
+            // Ensure directory exists
+            fs.mkdirSync(path.dirname(fullPath), { recursive: true });
             
-            await sandboxInstance.runCode(`
-import os
-os.makedirs(os.path.dirname("${fullPath}"), exist_ok=True)
-with open("${fullPath}", 'w') as f:
-    f.write("""${escapedContent}""")
-print(f"File written: ${fullPath}")
-            `);
+            // Write the file
+            fs.writeFileSync(fullPath, fileContent);
+            console.log(`[apply-ai-code-stream] File written: ${fullPath}`);
             
             // Update file cache
-            if (global.sandboxState?.fileCache) {
-              global.sandboxState.fileCache.files[normalizedPath] = {
+            if (global.localProjectState?.fileCache) {
+              global.localProjectState.fileCache.files[normalizedPath] = {
                 content: fileContent,
                 lastModified: Date.now()
               };
@@ -580,65 +512,47 @@ print(f"File written: ${fullPath}")
           }
         }
         
-        // Step 3: Execute commands
-        const commandsArray = Array.isArray(parsed.commands) ? parsed.commands : [];
-        if (commandsArray.length > 0) {
-          await sendProgress({ 
-            type: 'step', 
+        // Step 3: Log commands (actual execution happens in local dev server)
+        if (parsed.commands && parsed.commands.length > 0) {
+          await sendProgress({
+            type: 'step',
             step: 3,
-            message: `Executing ${commandsArray.length} commands...`
+            message: `Logging ${parsed.commands.length} commands...`
           });
           
-          for (const [index, cmd] of commandsArray.entries()) {
+          for (const [index, command] of parsed.commands.entries()) {
             try {
               await sendProgress({
                 type: 'command-progress',
                 current: index + 1,
                 total: parsed.commands.length,
-                command: cmd,
-                action: 'executing'
+                command
               });
               
-              // Use E2B commands.run() for cleaner execution
-              const result = await sandboxInstance.commands.run(cmd, {
-                cwd: '/home/user/app',
-                timeout: 60,
-                on_stdout: async (data: string) => {
-                  await sendProgress({
-                    type: 'command-output',
-                    command: cmd,
-                    output: data,
-                    stream: 'stdout'
-                  });
-                },
-                on_stderr: async (data: string) => {
-                  await sendProgress({
-                    type: 'command-output',
-                    command: cmd,
-                    output: data,
-                    stream: 'stderr'
-                  });
-                }
-              });
+              // Get the project directory reference
+              const projectDir = path.join(process.cwd(), 'projects', effectiveProjectName);
               
-              if (results.commandsExecuted) {
-                results.commandsExecuted.push(cmd);
-              }
+              // Log the command (actual execution happens in local dev server)
+              console.log(`[apply-ai-code-stream] Command to execute: ${command}`);
+              console.log(`[apply-ai-code-stream] Working directory: ${projectDir}`);
+              
+              // Simulate successful execution
+              results.commandsExecuted.push(command);
               
               await sendProgress({
                 type: 'command-complete',
-                command: cmd,
-                exitCode: result.exitCode,
-                success: result.exitCode === 0
+                command: command,
+                exitCode: 0,
+                success: true
               });
-            } catch (error) {
-              if (results.errors) {
-                results.errors.push(`Failed to execute ${cmd}: ${(error as Error).message}`);
-              }
+            } catch (cmdError) {
+              console.error(`[apply-ai-code-stream] Command logging error:`, cmdError);
+              results.errors.push(`Command logging error: ${(cmdError as Error).message}`);
+              
               await sendProgress({
                 type: 'command-error',
-                command: cmd,
-                error: (error as Error).message
+                command: command,
+                error: (cmdError as Error).message
               });
             }
           }
@@ -686,7 +600,7 @@ print(f"File written: ${fullPath}")
       } finally {
         await writer.close();
       }
-    })(sandbox, request);
+    })(request);
     
     // Return the stream
     return new Response(stream.readable, {

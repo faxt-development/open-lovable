@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open Lovable - AI Provider Selection & Usage Flow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif; margin: 0; padding: 20px; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 2rem; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    h1 { color: #1e40af; margin-top: 0; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; }
+    h2 { color: #0f172a; margin-top: 2rem; }
+    .mermaid { margin: 1.5rem 0; min-height: 640px; }
+    .legend { background: #f1f5f9; padding: 1rem; border-radius: 8px; border-left: 4px solid #3b82f6; }
+    .note { font-size: 0.95rem; color: #334155; }
+    code { background: #e2e8f0; padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Provider Selection & Usage Flow</h1>
+    <p class="note">This diagram reflects the logic implemented in <code>app/api/generate-ai-code-stream/route.ts</code>, <code>app/api/analyze-edit-intent/route.ts</code>, and <code>config/app.config.ts</code>.</p>
+
+    <h2>End-to-End Flow</h2>
+    <div class="mermaid">
+    flowchart TD
+      %% Style definitions
+      classDef route fill:#d1fae5,stroke:#10b981,stroke-width:2px,color:#065f46
+      classDef config fill:#e0e7ff,stroke:#6366f1,stroke-width:2px,color:#1e3a8a
+      classDef env fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#78350f
+      classDef provider fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#7f1d1d
+      classDef decision fill:#f5f3ff,stroke:#8b5cf6,stroke-width:2px,color:#312e81
+      classDef process fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#111827
+
+      %% Entry points
+      A[Client Request] -->|POST generate-ai| GRS[Generate Route]
+      A -->|POST analyze-intent| ARS[Analyze Route]
+
+      %% Config & env
+      CFG[appConfig.ai.defaultModel] --> DEF[Default Model]
+      ENV[Environment Variables] --> PVAR[AI_PROVIDER]
+      ENV --> KEYS[[API Keys Present]]
+
+      %% Provider init (shared)
+      PVAR --> INIT{Initialize Providers?}
+      KEYS --> INIT
+      INIT -->|AI_PROVIDER specific| SELP[Init selected provider only]
+      INIT -->|AI_PROVIDER auto| AUTOP[Init any provider with present key]
+
+      %% Generate route specifics
+      GRS --> GM[Parse body prompt model optional isEdit context]
+      GM --> GDM{model provided}
+      GDM -->|no| GUSE[Use appConfig.ai.defaultModel]
+      GDM -->|yes| GMODEL[Use provided model]
+      GUSE --> GMMAP
+      GMODEL --> GMMAP
+      GMMAP{MODEL_MAPPING contains model} -->|no| GERR[400 Unsupported model lists supported]
+      GMMAP -->|yes| GPROV{Mapped provider available}
+      GPROV -->|no| GPErr[Throw provider not initialized error]
+      GPROV -->|bedrock| GBED[Create Bedrock streaming wrapper]
+      GPROV -->|other providers| GCLI[Create model client]
+      GCLI --> GAI[Call streamText with context]
+      GBED --> GAI
+
+      %% Analyze route specifics
+      ARS --> AM[Parse body prompt manifest model optional]
+      AM --> ADM{model provided}
+      ADM -->|no| AUSE[Use appConfig.ai.defaultModel]
+      ADM -->|yes| AMODEL[Use provided model]
+      AUSE --> ASEL
+      AMODEL --> ASEL
+      ASEL{Prefix-based selection}
+      ASEL -->|anthropic| AANTH[Anthropic require key and trimPrefix]
+      ASEL -->|openai non-oss| AOPEN[OpenAI non oss require key and trimPrefix]
+      ASEL -->|openai gpt oss| AGROQ[OpenAI gpt oss require GROQ key]
+      ASEL -->|google| AGEM[Google require key and trimPrefix]
+      ASEL -->|other| ADEF[Default to Groq if unclear]
+      AANTH --> AOBJ[generateObject with schema and messages]
+      AOPEN --> AOBJ
+      AGROQ --> AOBJ
+      AGEM --> AOBJ
+      ADEF --> AOBJ
+
+      %% Shared outcomes
+      GAI --> OUT1[Stream AI code deltas and events to client]
+      AOBJ --> OUT2[Return structured searchPlan JSON]
+
+      %% Links to init
+      SELP --> GRS
+      AUTOP --> GRS
+      SELP -.-> ARS
+      AUTOP -.-> ARS
+
+      %% Classes
+      class A,GRS,ARS,OUT1,OUT2 route
+      class CFG,DEF,GUSE,AUSE config
+      class ENV,PVAR,KEYS env
+      class GERR,GPErr provider
+      class INIT,GCLI,GBED,GAI,AM,GM,GMMAP,GPROV,ASEL,AANTH,AOPEN,AGROQ,AGEM,ADEF,AOBJ,GMODEL,AMODEL process
+      class GDM,ADM decision
+    </div>
+
+    <h2>Key Rules</h2>
+    <ul class="note">
+      <li><strong>Provider mode:</strong> <code>AI_PROVIDER</code> can be <code>openai</code>, <code>anthropic</code>, <code>google</code>, <code>groq</code>, <code>bedrock</code>, or <code>auto</code>.</li>
+      <li><strong>Auto mode:</strong> Initializes any provider for which a corresponding API key is present.</li>
+      <li><strong>Defaults:</strong> When a model isn’t provided, routes use <code>appConfig.ai.defaultModel</code>.</li>
+      <li><strong>Model validation:</strong> <code>generate-ai-code-stream</code> validates against <code>MODEL_MAPPING</code> and rejects unsupported models with 400.</li>
+      <li><strong>Analyze prefixing:</strong> <code>analyze-edit-intent</code> selects provider using model prefixes and key presence.</li>
+      <li><strong>Bedrock:</strong> Special client wrapper streams text via <code>bedrockClient.streamText()</code>.</li>
+      <li><strong>Error visibility:</strong> Clear errors when provider not initialized or model unsupported; startup logs print key presence (non-secret).</li>
+    </ul>
+
+    <div class="legend">
+      <h3>Legend</h3>
+      <p><strong>Route (Green):</strong> API entrypoints and results.</p>
+      <p><strong>Config (Purple):</strong> Values from <code>app.config.ts</code>.</p>
+      <p><strong>Env (Yellow):</strong> Environment variables and API key presence.</p>
+      <p><strong>Provider (Red):</strong> Provider-related errors and validations.</p>
+      <p><strong>Process (Gray):</strong> Internal steps and decisions.</p>
+    </div>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+    });
+  </script>
+</body>
+</html>
