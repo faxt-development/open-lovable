@@ -1,44 +1,66 @@
 import { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } from "@aws-sdk/client-bedrock-runtime";
+import fs from 'fs';
+import path from 'path';
 
 type BedrockModel = {
+  // The logical identifier (e.g., foundation model ID like "anthropic.claude-3-7-sonnet-20250219-v1:0"
+  // OR an ARN key when looked up by ARN)
   id: string;
   name: string;
   provider: string;
   maxTokens: number;
+  // If present, this is the preferred target to send to Bedrock runtime.
+  // In practice, we use the inference profile ARN here (stored from JSON as modelArn).
+  invokeId?: string; // e.g., arn:aws:bedrock:...:inference-profile/...
 };
 
-export const BEDROCK_MODELS: Record<string, BedrockModel> = {
-  'anthropic.claude-3-sonnet-20240229-v1:0': {
-    id: 'anthropic.claude-3-sonnet-20240229-v1:0',
-    name: 'Claude 3 Sonnet',
-    provider: 'Anthropic',
-    maxTokens: 200000,
-  },
-  'anthropic.claude-3-haiku-20240307-v1:0': {
-    id: 'anthropic.claude-3-haiku-20240307-v1:0',
-    name: 'Claude 3 Haiku',
-    provider: 'Anthropic',
-    maxTokens: 200000,
-  },
-  'anthropic.claude-v2': {
-    id: 'anthropic.claude-v2',
-    name: 'Claude 2',
-    provider: 'Anthropic',
-    maxTokens: 100000,
-  },
-  'amazon.titan-text-lite-v1': {
-    id: 'amazon.titan-text-lite-v1',
-    name: 'Titan Text Lite',
-    provider: 'Amazon',
-    maxTokens: 4000,
-  },
-  'amazon.titan-text-express-v1': {
-    id: 'amazon.titan-text-express-v1',
-    name: 'Titan Text Express',
-    provider: 'Amazon',
-    maxTokens: 8000,
-  },
-};
+function inferMaxTokens(providerName?: string): number {
+  const p = (providerName || '').toLowerCase();
+  if (p.includes('anthropic')) return 200000;
+  if (p.includes('amazon') || p.includes('titan') || p.includes('nova')) return 8000;
+  return 4000;
+}
+
+function loadBedrockModelsFromFile(): Record<string, BedrockModel> {
+  const models: Record<string, BedrockModel> = {};
+  try {
+    const configuredPath = process.env.BEDROCK_ALLOWED_MODELS_PATH;
+    const fallbackPath = path.join(process.cwd(), 'mybedrockaccess.json');
+    const chosenPath = configuredPath && fs.existsSync(configuredPath)
+      ? configuredPath
+      : (fs.existsSync(fallbackPath) ? fallbackPath : undefined);
+    if (!chosenPath) return models;
+    const raw = fs.readFileSync(chosenPath, 'utf-8');
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        if (!item || typeof item !== 'object') continue;
+        const modelArn: string | undefined = (item as any).modelArn; // In your data, this holds the inference profile ARN
+        const modelId: string | undefined = (item as any).modelId;
+        const modelName: string = ((item as any).modelName || modelId || modelArn || 'Unknown') as string;
+        const providerName: string | undefined = (item as any).providerName;
+        const maxTokens = inferMaxTokens(providerName);
+
+        // Build a single canonical model entry and map it by both keys (id and arn) to ease lookup
+        const base: BedrockModel = {
+          id: modelId || modelArn || modelName,
+          name: modelName,
+          provider: providerName || 'Unknown',
+          maxTokens,
+          invokeId: modelArn || undefined,
+        };
+
+        if (modelId) models[modelId] = base;
+        if (modelArn) models[modelArn] = base;
+      }
+    }
+  } catch (e) {
+    console.warn('[aws-bedrock] Failed to load models file:', (e as Error).message);
+  }
+  return models;
+}
+
+export const BEDROCK_MODELS: Record<string, BedrockModel> = loadBedrockModelsFromFile();
 
 export interface BedrockStreamOptions {
   region?: string;
@@ -76,48 +98,40 @@ export class BedrockClient {
     temperature?: number;
     topP?: number;
   }) {
-    // Try known models; if not present, infer sensible defaults based on modelId prefix
+    // Try known models; if not present, infer sensible defaults based on identifier
     let model = BEDROCK_MODELS[modelId];
     if (!model) {
-      if (modelId.startsWith('anthropic.')) {
-        model = {
-          id: modelId,
-          name: modelId,
-          provider: 'Anthropic',
-          maxTokens: 200000,
-        };
-      } else if (modelId.startsWith('amazon.')) {
-        model = {
-          id: modelId,
-          name: modelId,
-          provider: 'Amazon',
-          maxTokens: 8000,
-        };
-      } else {
-        model = {
-          id: modelId,
-          name: modelId,
-          provider: 'Unknown',
-          maxTokens: 4000,
-        };
-      }
+      const provider = this.detectProvider(modelId);
+      model = {
+        id: modelId,
+        name: modelId,
+        provider,
+        maxTokens: inferMaxTokens(provider),
+      };
     }
 
+    // Decide what identifier to actually invoke with (prefer inference profile ARN if present)
+    const invokeTarget = model.invokeId || model.id;
+
     // Format messages for the specific model
-    const formattedMessages = this.formatMessagesForModel(modelId, messages);
+    const formattedMessages = this.formatMessagesForModel(invokeTarget, messages);
+
+    // Debug provider resolution
+    const detectedProvider = this.detectProvider(invokeTarget);
+    console.log('[aws-bedrock] Invoking provider:', detectedProvider, 'target:', invokeTarget);
 
     const command = new InvokeModelWithResponseStreamCommand({
-      modelId,
+      modelId: invokeTarget,
       contentType: 'application/json',
       accept: 'application/json',
       body: JSON.stringify({
-        ...(modelId.startsWith('anthropic.') ? {
+        ...(detectedProvider === 'Anthropic' ? {
           anthropic_version: 'bedrock-2023-05-31',
           max_tokens: Math.min(maxTokens, model.maxTokens),
           messages: formattedMessages,
           temperature,
           top_p: topP,
-        } : modelId.startsWith('amazon.') ? {
+        } : detectedProvider === 'Amazon' ? {
           inputText: messages[messages.length - 1].content,
           textGenerationConfig: {
             maxTokenCount: Math.min(maxTokens, model.maxTokens),
@@ -144,11 +158,11 @@ export class BedrockClient {
       
       const payload = JSON.parse(Buffer.from(chunk.chunk.bytes).toString('utf-8'));
       
-      if (modelId.startsWith('anthropic.')) {
+      if (detectedProvider === 'Anthropic') {
         if (payload.type === 'content_block_delta' && payload.delta?.text) {
           yield { text: payload.delta.text };
         }
-      } else if (modelId.startsWith('amazon.')) {
+      } else if (detectedProvider === 'Amazon') {
         if (payload.outputText) {
           yield { text: payload.outputText };
         }
@@ -162,15 +176,31 @@ export class BedrockClient {
     modelId: string,
     messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
   ) {
-    if (modelId.startsWith('anthropic.')) {
+    const provider = this.detectProvider(modelId);
+    if (provider === 'Anthropic') {
+      // Bedrock Anthropic Messages API expects content blocks: { type: 'text', text: string }
       return messages.map(msg => ({
-        role: msg.role === 'system' ? 'user' : msg.role,
-        content: msg.role === 'system' ? `System: ${msg.content}` : msg.content,
+        role: (msg.role === 'system' ? 'user' : msg.role) as 'user' | 'assistant',
+        content: [
+          { type: 'text', text: msg.role === 'system' ? `System: ${msg.content}` : msg.content }
+        ],
       }));
     }
-    
     // For other models, just return the last user message
     return [messages[messages.length - 1]];
+  }
+
+  private detectProvider(modelId: string): string {
+    // Normalize detection for both ARNs (foundation-model/ or inference-profile/) and plain IDs
+    const id = modelId.toLowerCase();
+    // Look anywhere in the string to support names like "us.anthropic.claude..."
+    if (id.includes('anthropic.')) return 'Anthropic';
+    if (id.includes('amazon.')) return 'Amazon';
+    if (id.includes('meta.')) return 'Meta';
+    if (id.includes('mistral.')) return 'Mistral';
+    if (id.includes('cohere.')) return 'Cohere';
+    if (id.includes('deepseek.')) return 'DeepSeek';
+    return 'Unknown';
   }
 }
 

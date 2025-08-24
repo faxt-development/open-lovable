@@ -105,29 +105,38 @@ function loadBedrockAllowList(): Set<string> {
 
 const BEDROCK_ALLOWLIST = loadBedrockAllowList();
 
-// Optional mapping: modelId -> preferred identifier (inferenceProfileArn if present),
-// falling back to modelId. This helps when certain models require an inference profile.
-function loadBedrockIdMap(): Map<string, string> {
-  const map = new Map<string, string>();
+// Optional mapping: modelId -> structured identifiers.
+// preferredId resolves to inferenceProfileArn if present, otherwise modelId.
+// Also carries the raw inferenceProfileArn and modelArn when available.
+function loadBedrockIdMap(): Map<string, { preferredId: string; inferenceProfileArn?: string; modelArn?: string }> {
+  const map = new Map<string, { preferredId: string; inferenceProfileArn?: string; modelArn?: string }>();
   try {
     const path = process.env.BEDROCK_ALLOWED_MODELS_PATH;
     if (path && fs.existsSync(path)) {
       const raw = fs.readFileSync(path, 'utf-8');
       const data = JSON.parse(raw);
-      const add = (modelId?: any, profileArn?: any) => {
+      const add = (modelId?: any, profileArn?: any, modelArn?: any) => {
         if (typeof modelId === 'string' && modelId.trim()) {
-          map.set(modelId.trim(), (typeof profileArn === 'string' && profileArn.trim()) ? profileArn.trim() : modelId.trim());
+          const cleanModelId = modelId.trim();
+          const cleanProfileArn = (typeof profileArn === 'string' && profileArn.trim()) ? profileArn.trim() : undefined;
+          const cleanModelArn = (typeof modelArn === 'string' && modelArn.trim()) ? modelArn.trim() : undefined;
+          map.set(cleanModelId, {
+            // Prefer inference profile ARN over model ARN over raw ID
+            preferredId: cleanProfileArn || cleanModelArn || cleanModelId,
+            inferenceProfileArn: cleanProfileArn,
+            modelArn: cleanModelArn,
+          });
         }
       };
       if (Array.isArray(data)) {
         for (const item of data) {
           if (item && typeof item === 'object') {
-            add((item as any).modelId, (item as any).inferenceProfileArn);
+            add((item as any).modelId, (item as any).inferenceProfileArn, (item as any).modelArn);
           }
         }
       } else if (data && typeof data === 'object' && Array.isArray((data as any).modelSummaries)) {
         for (const item of (data as any).modelSummaries) {
-          add(item?.modelId, item?.inferenceProfileArn);
+          add(item?.modelId, item?.inferenceProfileArn, item?.modelArn);
         }
       }
     }
@@ -228,10 +237,10 @@ function getModelProvider(modelId: string) {
     case 'bedrock':
       if (!useBedrock) throw new Error('AWS Bedrock not initialized. Set AI_PROVIDER=bedrock or AI_PROVIDER=auto and provide AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
       // Use inference profile ARN if available
-      const resolvedId = BEDROCK_ID_MAP.get(modelConfig.modelId) || modelConfig.modelId;
-     //get the modelArn from the modelId
-     const modelArn = BEDROCK_ID_MAP.get(modelConfig.modelId);
-     console.log('[generate-ai-code-stream] modelArn:', modelArn);
+      const mapping = BEDROCK_ID_MAP.get(modelConfig.modelId);
+      const resolvedId = mapping?.preferredId || modelConfig.modelId;
+      const modelArn = mapping?.modelArn;
+      console.log('[generate-ai-code-stream] modelArn:', modelArn);
       return {
         async *streamText(options: any) {
           const stream = bedrockClient.streamText({
@@ -349,7 +358,7 @@ export async function POST(request: NextRequest) {
     // If provider is Bedrock, enforce allowlist if present and map to inference profile if available
     if (modelConfig.provider === 'bedrock' && useBedrock) {
       const originalId = modelConfig.modelId;
-      const resolvedId = BEDROCK_ID_MAP.get(originalId) || originalId;
+      const resolvedId = BEDROCK_ID_MAP.get(originalId)?.preferredId || originalId;
       modelConfig = { ...modelConfig, modelId: resolvedId };
       if (BEDROCK_ALLOWLIST.size > 0 && !BEDROCK_ALLOWLIST.has(originalId) && !BEDROCK_ALLOWLIST.has(resolvedId)) {
         console.error('[generate-ai-code-stream] Bedrock model not allowed by env:', modelConfig.modelId);
@@ -1385,7 +1394,7 @@ CRITICAL: When files are provided in the context:
         if (isBedrockProvider) {
           // Map to inference profile ARN if present
           const originalId = modelConfig.modelId;
-          const resolvedId = BEDROCK_ID_MAP.get(originalId) || originalId;
+          const resolvedId = BEDROCK_ID_MAP.get(originalId)?.preferredId || originalId;
           modelConfig = { ...modelConfig, modelId: resolvedId };
         }
         if (!isBedrockProvider) {
@@ -1513,7 +1522,12 @@ It's better to have 3 complete files than 10 incomplete files.`
         
         // Stream the response and parse for packages in real-time
         for await (const textPart of result.textStream) {
-          const text = textPart || '';
+          const text = typeof textPart === 'string'
+            ? textPart
+            : (textPart && typeof (textPart as any).text === 'string'
+              ? (textPart as any).text
+              : '');
+          if (!text) continue;
           generatedCode += text;
           currentFile += text;
           
@@ -1521,7 +1535,7 @@ It's better to have 3 complete files than 10 incomplete files.`
           const searchText = tagBuffer + text;
           
           // Log streaming chunks to console
-          process.stdout.write(text);
+          try { process.stdout.write(text); } catch {}
           
           // Check if we're entering or leaving a tag
           const hasOpenTag = /<(file|package|packages|explanation|command|structure|template)\b/.test(text);

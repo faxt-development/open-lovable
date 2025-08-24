@@ -47,6 +47,31 @@ AWS_REGION=us-east-1  # or your preferred region
 npm install @aws-sdk/client-bedrock-runtime @aws-sdk/client-bedrock-agent-runtime
 ```
 
+### 4. List available models (optional)
+
+Use AWS CLI to see Bedrock model IDs available in your region (handy for allowlists):
+
+```bash
+aws bedrock list-foundation-models \
+  --region us-east-1 \
+  --query 'modelSummaries[].{ModelId:modelId,ModelName:modelName,Provider:providerName}' \
+  --output table
+```
+
+### 5. Verify model access with Python (optional)
+
+Run the helper script to check which models your IAM user can access. This is useful when setting up allowlists.
+
+Script: `docs/check_bedrock_access.py`
+
+```bash
+# Install dependency (once)
+pip install boto3
+
+# Run from repo root
+python3 docs/check_bedrock_access.py
+```
+
 ## Configuration
 
 ### Environment Variables
