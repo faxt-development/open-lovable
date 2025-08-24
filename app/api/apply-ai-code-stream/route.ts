@@ -261,7 +261,7 @@ function parseAIResponse(response: string): ParsedResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const { response, isEdit = false, packages = [] } = await request.json();
+    const { response, isEdit = false, packages = [], projectName } = await request.json();
     
     if (!response) {
       return NextResponse.json({
@@ -294,24 +294,10 @@ export async function POST(request: NextRequest) {
       global.existingFiles = new Set<string>();
     }
     
-    // Check if we have a local project state
-    if (!global.localProjectState) {
-      console.log('[apply-ai-code-stream] No local project state available');
-      return NextResponse.json({
-        success: false,
-        error: 'No active local project found. Please create a project first.',
-        results: {
-          filesCreated: [],
-          packagesInstalled: [],
-          commandsExecuted: [],
-          errors: ['No local project available']
-        },
-        explanation: parsed.explanation,
-        structure: parsed.structure,
-        parsedFiles: parsed.files,
-        message: `Parsed ${parsed.files.length} files but no local project available to apply them.`
-      });
-    }
+    // Determine effective project name even if global state is not initialized
+    const effectiveProjectName = (typeof projectName === 'string' && projectName.trim())
+      ? projectName.trim()
+      : (global.localProjectState?.projectData?.projectName || 'default');
     
     // Create a response stream for real-time updates
     const encoder = new TextEncoder();
@@ -382,7 +368,7 @@ export async function POST(request: NextRequest) {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ 
                 packages: uniquePackages,
-                projectName: global.localProjectState?.projectData?.projectName || 'default'
+                projectName: effectiveProjectName
               })
             });
             
@@ -453,8 +439,7 @@ export async function POST(request: NextRequest) {
         });
         
         // Get the project root directory
-        const projectRoot = global.localProjectState?.projectData?.projectName || 'default';
-        const projectDir = path.join(process.cwd(), 'projects', projectRoot);
+        const projectDir = path.join(process.cwd(), 'projects', effectiveProjectName);
         
         for (const [index, file] of filteredFiles.entries()) {
           try {
@@ -545,8 +530,7 @@ export async function POST(request: NextRequest) {
               });
               
               // Get the project directory reference
-              const projectRoot = global.localProjectState?.projectData?.projectName || 'default';
-              const projectDir = path.join(process.cwd(), 'projects', projectRoot);
+              const projectDir = path.join(process.cwd(), 'projects', effectiveProjectName);
               
               // Log the command (actual execution happens in local dev server)
               console.log(`[apply-ai-code-stream] Command to execute: ${command}`);

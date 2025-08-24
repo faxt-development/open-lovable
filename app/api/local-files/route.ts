@@ -14,7 +14,9 @@ import {
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
-    const projectName = url.searchParams.get('project') || 'default';
+    // Support both ?project= and legacy ?path= params
+    const projectParam = url.searchParams.get('project') || url.searchParams.get('path');
+    const projectName = projectParam && projectParam.trim() ? projectParam.trim() : 'default';
     const filePath = url.searchParams.get('file');
     
     if (filePath) {
