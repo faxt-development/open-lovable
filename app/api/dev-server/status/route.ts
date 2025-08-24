@@ -5,7 +5,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const portParam = searchParams.get('port');
-    const port = portParam ? Number(portParam) : 3000;
+    const port = portParam ? Number(portParam) : 5173;
 
     const running = await isDevServerRunning(port);
 

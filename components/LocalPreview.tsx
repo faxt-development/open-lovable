@@ -10,7 +10,7 @@ interface LocalPreviewProps {
 
 export default function LocalPreview({
   projectName,
-  port = 3000,
+  port = 5173,
   output = '',
   isLoading = false
 }: LocalPreviewProps) {
