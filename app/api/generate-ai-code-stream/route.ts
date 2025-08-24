@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'fs';
 import { createGroq } from '@ai-sdk/groq';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -59,7 +60,86 @@ if (useBedrock) {
   console.log('[generate-ai-code-stream] Initialized AWS Bedrock provider');
 }
 
-// Model mapping for different providers
+// Bedrock allowlist support (AWS requires explicit model access)
+function loadBedrockAllowList(): Set<string> {
+  const set = new Set<string>();
+  try {
+    // CSV from env
+    const csv = process.env.BEDROCK_ALLOWED_MODELS;
+    if (csv) {
+      csv.split(/[\s,]+/)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .forEach(id => set.add(id));
+    }
+    // Optional JSON file path
+    const path = process.env.BEDROCK_ALLOWED_MODELS_PATH;
+    if (path && fs.existsSync(path)) {
+      const raw = fs.readFileSync(path, 'utf-8');
+      const data = JSON.parse(raw);
+      const addId = (id: any) => {
+        if (typeof id === 'string' && id.trim()) set.add(id.trim());
+      };
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && typeof item === 'object') {
+            if ('modelId' in item) addId((item as any).modelId);
+            if ('inferenceProfileArn' in item) addId((item as any).inferenceProfileArn);
+            if ('modelArn' in item) addId((item as any).modelArn);
+          }
+          else if (typeof item === 'string') addId(item);
+        }
+      } else if (data && typeof data === 'object' && Array.isArray((data as any).modelSummaries)) {
+        for (const item of (data as any).modelSummaries) {
+          if (item?.modelId) addId(item.modelId);
+          if (item?.inferenceProfileArn) addId(item.inferenceProfileArn);
+          if (item?.modelArn) addId(item.modelArn);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[generate-ai-code-stream] Failed to load BEDROCK allowlist:', (e as Error).message);
+  }
+  return set;
+}
+
+const BEDROCK_ALLOWLIST = loadBedrockAllowList();
+
+// Optional mapping: modelId -> preferred identifier (inferenceProfileArn if present),
+// falling back to modelId. This helps when certain models require an inference profile.
+function loadBedrockIdMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const path = process.env.BEDROCK_ALLOWED_MODELS_PATH;
+    if (path && fs.existsSync(path)) {
+      const raw = fs.readFileSync(path, 'utf-8');
+      const data = JSON.parse(raw);
+      const add = (modelId?: any, profileArn?: any) => {
+        if (typeof modelId === 'string' && modelId.trim()) {
+          map.set(modelId.trim(), (typeof profileArn === 'string' && profileArn.trim()) ? profileArn.trim() : modelId.trim());
+        }
+      };
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && typeof item === 'object') {
+            add((item as any).modelId, (item as any).inferenceProfileArn);
+          }
+        }
+      } else if (data && typeof data === 'object' && Array.isArray((data as any).modelSummaries)) {
+        for (const item of (data as any).modelSummaries) {
+          add(item?.modelId, item?.inferenceProfileArn);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[generate-ai-code-stream] Failed to load BEDROCK id map:', (e as Error).message);
+  }
+  return map;
+}
+
+const BEDROCK_ID_MAP = loadBedrockIdMap();
+
+// Model mapping for different providers (Bedrock added dynamically from allowlist below)
 const MODEL_MAPPING: Record<string, { provider: string; modelId: string }> = {
   // OpenAI
   'openai/gpt-4': { provider: 'openai', modelId: 'gpt-4' },
@@ -78,13 +158,6 @@ const MODEL_MAPPING: Record<string, { provider: string; modelId: string }> = {
   
   // Google
   'google/gemini-pro': { provider: 'google', modelId: 'gemini-pro' },
-  
-  // AWS Bedrock
-  'bedrock/claude-3-sonnet': { provider: 'bedrock', modelId: 'anthropic.claude-3-sonnet-20240229-v1:0' },
-  'bedrock/claude-3-haiku': { provider: 'bedrock', modelId: 'anthropic.claude-3-haiku-20240307-v1:0' },
-  'bedrock/claude-2': { provider: 'bedrock', modelId: 'anthropic.claude-v2' },
-  'bedrock/titan-text-lite': { provider: 'bedrock', modelId: 'amazon.titan-text-lite-v1' },
-  'bedrock/titan-text-express': { provider: 'bedrock', modelId: 'amazon.titan-text-express-v1' },
 };
 
 // Helper function to analyze user preferences from conversation history
@@ -133,7 +206,8 @@ declare global {
 
 // Helper function to get the appropriate model provider
 function getModelProvider(modelId: string) {
-  const modelConfig = MODEL_MAPPING[modelId];
+  // Resolve config from static map or infer Bedrock when in Bedrock mode
+  let modelConfig = MODEL_MAPPING[modelId] || (useBedrock ? { provider: 'bedrock', modelId } : undefined as any);
   if (!modelConfig) {
     throw new Error(`Unsupported model: ${modelId}`);
   }
@@ -153,10 +227,15 @@ function getModelProvider(modelId: string) {
       return googleGenerativeAI(modelConfig.modelId);
     case 'bedrock':
       if (!useBedrock) throw new Error('AWS Bedrock not initialized. Set AI_PROVIDER=bedrock or AI_PROVIDER=auto and provide AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
+      // Use inference profile ARN if available
+      const resolvedId = BEDROCK_ID_MAP.get(modelConfig.modelId) || modelConfig.modelId;
+     //get the modelArn from the modelId
+     const modelArn = BEDROCK_ID_MAP.get(modelConfig.modelId);
+     console.log('[generate-ai-code-stream] modelArn:', modelArn);
       return {
         async *streamText(options: any) {
           const stream = bedrockClient.streamText({
-            modelId: modelConfig.modelId,
+            modelId: resolvedId,
             messages: options.messages,
             maxTokens: options.maxTokens,
             temperature: options.temperature,
@@ -252,13 +331,33 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
     
-    // Validate model mapping early to avoid provider hangs
-    if (!MODEL_MAPPING[model]) {
+    // Derive model configuration.
+    // Bedrock models come from user JSON/ENV and may NOT be prefixed with 'bedrock/'.
+    // If we're in Bedrock mode (per AI_PROVIDER/env) and the model isn't in the static map,
+    // treat the provided string as a Bedrock modelId.
+    let modelConfig = MODEL_MAPPING[model];
+    if (!modelConfig && useBedrock) {
+      modelConfig = { provider: 'bedrock', modelId: model };
+    }
+    if (!modelConfig) {
       console.error('[generate-ai-code-stream] Unsupported model requested:', model);
       return NextResponse.json({
         success: false,
-        error: `Unsupported model: ${model}. Please choose one of: ${Object.keys(MODEL_MAPPING).join(', ')}`
+        error: `Unsupported model: ${model}`
       }, { status: 400 });
+    }
+    // If provider is Bedrock, enforce allowlist if present and map to inference profile if available
+    if (modelConfig.provider === 'bedrock' && useBedrock) {
+      const originalId = modelConfig.modelId;
+      const resolvedId = BEDROCK_ID_MAP.get(originalId) || originalId;
+      modelConfig = { ...modelConfig, modelId: resolvedId };
+      if (BEDROCK_ALLOWLIST.size > 0 && !BEDROCK_ALLOWLIST.has(originalId) && !BEDROCK_ALLOWLIST.has(resolvedId)) {
+        console.error('[generate-ai-code-stream] Bedrock model not allowed by env:', modelConfig.modelId);
+        return NextResponse.json({
+          success: false,
+          error: `Bedrock model not allowed: ${originalId} (${resolvedId}). Add it to BEDROCK_ALLOWED_MODELS or BEDROCK_ALLOWED_MODELS_PATH.`
+        }, { status: 403 });
+      }
     }
     
     // Create a stream for real-time updates
@@ -1276,16 +1375,29 @@ CRITICAL: When files are provided in the context:
         // Track packages that need to be installed
         const packagesToInstall: string[] = [];
         
-        // Get the appropriate model provider
-        let modelInstance;
-        try {
-          modelInstance = getModelProvider(model);
-        } catch (error) {
-          console.error(`[generate-ai-code-stream] Error getting model provider:`, error);
-          return NextResponse.json(
-            { error: `Error initializing model provider: ${error instanceof Error ? error.message : String(error)}` },
-            { status: 400 }
-          );
+        // Resolve provider and model (Bedrock-aware)
+        let modelConfig = MODEL_MAPPING[model] || (useBedrock ? { provider: 'bedrock', modelId: model } : undefined as any);
+        if (!modelConfig) {
+          throw new Error(`Unsupported model: ${model}`);
+        }
+        let modelInstance: any = null;
+        const isBedrockProvider = modelConfig.provider === 'bedrock';
+        if (isBedrockProvider) {
+          // Map to inference profile ARN if present
+          const originalId = modelConfig.modelId;
+          const resolvedId = BEDROCK_ID_MAP.get(originalId) || originalId;
+          modelConfig = { ...modelConfig, modelId: resolvedId };
+        }
+        if (!isBedrockProvider) {
+          try {
+            modelInstance = getModelProvider(model);
+          } catch (error) {
+            console.error(`[generate-ai-code-stream] Error getting model provider:`, error);
+            return NextResponse.json(
+              { error: `Error initializing model provider: ${error instanceof Error ? (error as Error).message : String(error)}` },
+              { status: 400 }
+            );
+          }
         }
         
         const streamOptions: any = {
@@ -1371,7 +1483,21 @@ It's better to have 3 complete files than 10 incomplete files.`
           };
         }
         
-        const result = await streamText(streamOptions);
+        let result: any;
+        if (isBedrockProvider) {
+          // Use custom Bedrock streaming client to conform to AI SDK v5 expectations
+          const brStream = bedrockClient.streamText({
+            modelId: modelConfig.modelId,
+            messages: streamOptions.messages,
+            maxTokens: streamOptions.maxTokens,
+            temperature: streamOptions.temperature,
+            topP: streamOptions.topP,
+          });
+          // Adapt to the same interface used below
+          result = { textStream: brStream };
+        } else {
+          result = await streamText(streamOptions);
+        }
         
         // Stream the response and parse in real-time
         let generatedCode = '';

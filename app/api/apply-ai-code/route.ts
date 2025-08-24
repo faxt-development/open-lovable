@@ -134,7 +134,7 @@ declare global {
 
 export async function POST(request: NextRequest) {
   try {
-    const { response, isEdit = false, packages = [] } = await request.json();
+    const { response, isEdit = false, packages = [], model: bodyModel } = await request.json();
     
     if (!response) {
       return NextResponse.json({
@@ -574,6 +574,10 @@ if result.stderr:
       // Automatically generate missing components
       try {
         console.log('[apply-ai-code] Auto-generating missing components...');
+        // Determine model precedence: body -> header -> env -> default
+        const headerModel = request.headers.get('x-model') || request.headers.get('X-Model');
+        const envModel = process.env.NEXT_PUBLIC_DEFAULT_MODEL || process.env.AI_MODEL;
+        const selectedModel = bodyModel || headerModel || envModel || 'claude-sonnet-4-20250514';
         
         const autoCompleteResponse = await fetch(
           `${request.nextUrl.origin}/api/auto-complete-components`,
@@ -582,7 +586,7 @@ if result.stderr:
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               missingImports,
-              model: 'claude-sonnet-4-20250514'
+              model: selectedModel
             })
           }
         );

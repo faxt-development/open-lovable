@@ -82,6 +82,55 @@ export default function LocalDevelopmentPage() {
     return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : appConfig.ai.defaultModel;
   });
 
+  // Dynamic model options for UI (allow fetching Bedrock allowlist from server)
+  const [modelOptions, setModelOptions] = useState<string[]>(appConfig.ai.availableModels);
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>(
+    appConfig.ai.modelDisplayNames as Record<string, string>
+  );
+  const uiProvider = (process.env.NEXT_PUBLIC_AI_PROVIDER || 'auto').toLowerCase();
+  const [bedrockHealthOk, setBedrockHealthOk] = useState<boolean | null>(null);
+  const [bedrockHealthMsg, setBedrockHealthMsg] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchBedrockOptions() {
+      try {
+        const res = await fetch('/api/bedrock/allowed-models');
+        if (!res.ok) throw new Error('Failed to load bedrock models');
+        const data = await res.json();
+        if (!cancelled) {
+          // Only surface Bedrock health in Bedrock UI mode
+          if (uiProvider === 'bedrock') {
+            setBedrockHealthOk(typeof data?.ok === 'boolean' ? data.ok : null);
+            setBedrockHealthMsg(data?.message);
+          } else {
+            setBedrockHealthOk(null);
+            setBedrockHealthMsg(undefined);
+          }
+        }
+        const models: string[] = Array.isArray(data?.models) && data.models.length ? data.models : [];
+        if (!cancelled && models.length) {
+          setModelOptions(models);
+          setDisplayNames(prev => ({ ...prev, ...(data?.displayNames || {}) }));
+          if (!models.includes(aiModel)) {
+            setAiModel(models[0]);
+          }
+          return; // We successfully populated from Bedrock allowlist
+        }
+      } catch {}
+
+      // Fallback to app config if Bedrock allowlist unavailable or empty
+      if (!cancelled) {
+        setModelOptions(appConfig.ai.availableModels);
+        setDisplayNames(appConfig.ai.modelDisplayNames as Record<string, string>);
+      }
+    }
+
+    // Always attempt to load Bedrock allowlist; API decides if Bedrock is active based on server env
+    fetchBedrockOptions();
+    return () => { cancelled = true; };
+  }, [uiProvider]);
+
   // Feature flags
   const enableWebScrape = false; // Disable Firecrawl/scrape-based flow; start in chat mode
 
@@ -136,6 +185,11 @@ export default function LocalDevelopmentPage() {
   const [codeApplicationState, setCodeApplicationState] = useState<CodeApplicationState>({
     stage: null
   });
+  
+  // Concurrency guard for chat submissions
+  const [isChatting, setIsChatting] = useState(false);
+  const chatInFlightRef = useRef(false);
+  const [chatAbortController, setChatAbortController] = useState<AbortController | null>(null);
   
   const [generationProgress, setGenerationProgress] = useState<{
     isGenerating: boolean;
@@ -258,6 +312,15 @@ export default function LocalDevelopmentPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showHomeScreen]);
   
+  // Abort any in-flight chat request when unmounting
+  useEffect(() => {
+    return () => {
+      try {
+        chatAbortController?.abort();
+      } catch {}
+    };
+  }, [chatAbortController]);
+  
   // Start capturing screenshot if URL is provided on mount (from home screen)
   useEffect(() => {
     if (enableWebScrape && !showHomeScreen && homeUrlInput && !urlScreenshot && !isCapturingScreenshot) {
@@ -273,14 +336,7 @@ export default function LocalDevelopmentPage() {
   useEffect(() => {
     // Only check dev server status on mount and when user navigates to the page
     checkDevServerStatus();
-    
-    // Optional: Check status when window regains focus
-    const handleFocus = () => {
-      checkDevServerStatus();
-    };
-    
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
+    // Removed focus listener to reduce status log noise
   }, [projectData?.projectName]); // Re-run when project name changes
 
   useEffect(() => {
@@ -1524,6 +1580,8 @@ export default function LocalDevelopmentPage() {
   const sendChatMessage = async () => {
     const message = aiChatInput.trim();
     if (!message) return;
+    // Prevent overlapping submissions
+    if (isChatting || chatInFlightRef.current) return;
     
     if (!aiEnabled) {
       addChatMessage('AI is disabled. Please enable it first.', 'system');
@@ -1599,6 +1657,8 @@ export default function LocalDevelopmentPage() {
       console.log('[chat] - projectId:', fullContext.projectId);
       console.log('[chat] - isEdit:', conversationContext.appliedCode.length > 0);
       
+      const controller = new AbortController();
+      
       const response = await fetch('/api/generate-ai-code-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1607,7 +1667,8 @@ export default function LocalDevelopmentPage() {
           model: aiModel,
           context: fullContext,
           isEdit: conversationContext.appliedCode.length > 0
-        })
+        }),
+        signal: controller.signal
       });
       
       if (!response.ok) {
@@ -1912,6 +1973,10 @@ export default function LocalDevelopmentPage() {
         setActiveTab('preview');
       }, 1000); // Reduced from 3000ms to 1000ms
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        // Silently ignore aborts
+        return;
+      }
       setChatMessages(prev => prev.filter(msg => msg.content !== 'Thinking...'));
       addChatMessage(`Error: ${error.message}`, 'system');
       // Reset generation progress and switch back to preview on error
@@ -1930,6 +1995,10 @@ export default function LocalDevelopmentPage() {
         lastProcessedPosition: 0
       });
       setActiveTab('preview');
+    } finally {
+      setIsChatting(false);
+      chatInFlightRef.current = false;
+      setChatAbortController(null);
     }
   };
 
@@ -3040,9 +3109,9 @@ Focus on the key sections and content, making it clean and modern.`;
                     boxShadow: '0 0 0 1px #e3e1de66, 0 1px 2px #5f4a2e14'
                   }}
                 >
-                  {appConfig.ai.availableModels.map(model => (
+                  {modelOptions.map(model => (
                     <option key={model} value={model}>
-                      {appConfig.ai.modelDisplayNames[model as keyof typeof appConfig.ai.modelDisplayNames] || model}
+                      {displayNames[model] || model}
                     </option>
                   ))}
                 </select>
@@ -3051,7 +3120,14 @@ Focus on the key sections and content, making it clean and modern.`;
           </div>
         </div>
       )}
-      
+
+      {uiProvider === 'bedrock' && bedrockHealthOk === false && (
+        <div className="mx-4 mt-3 mb-0 rounded-md border border-yellow-300 bg-yellow-50 text-yellow-900 px-3 py-2 text-sm">
+          <strong className="font-medium">Bedrock allowlist warning: </strong>
+          {bedrockHealthMsg || 'Bedrock allowlist not found or empty.'}
+        </div>
+      )}
+
       <div className="bg-card px-4 py-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-4">
           <img
@@ -3076,9 +3152,9 @@ Focus on the key sections and content, making it clean and modern.`;
             }}
             className="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-[10px] focus:outline-none focus:ring-2 focus:ring-[#36322F] focus:border-transparent"
           >
-            {appConfig.ai.availableModels.map(model => (
+            {modelOptions.map(model => (
               <option key={model} value={model}>
-                {appConfig.ai.modelDisplayNames[model as keyof typeof appConfig.ai.modelDisplayNames] || model}
+                {displayNames[model] || model}
               </option>
             ))}
           </select>
@@ -3368,17 +3444,23 @@ Focus on the key sections and content, making it clean and modern.`;
                 value={aiChatInput}
                 onChange={(e) => setAiChatInput(e.target.value)}
                 onKeyDown={(e) => {
+                  if (isChatting || generationProgress.isGenerating) return;
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     sendChatMessage();
                   }
                 }}
+                disabled={isChatting || generationProgress.isGenerating}
                 rows={3}
               />
               <button
-                onClick={sendChatMessage}
+                onClick={() => {
+                  if (isChatting || generationProgress.isGenerating) return;
+                  sendChatMessage();
+                }}
                 className="absolute right-2 bottom-2 p-2 bg-[#36322F] text-white rounded-[10px] hover:bg-[#4a4542] [box-shadow:inset_0px_-2px_0px_0px_#171310,_0px_1px_6px_0px_rgba(58,_33,_8,_58%)] hover:translate-y-[1px] hover:scale-[0.98] hover:[box-shadow:inset_0px_-1px_0px_0px_#171310,_0px_1px_3px_0px_rgba(58,_33,_8,_40%)] active:translate-y-[2px] active:scale-[0.97] active:[box-shadow:inset_0px_1px_1px_0px_#171310,_0px_1px_2px_0px_rgba(58,_33,_8,_30%)] transition-all duration-200"
                 title="Send message (Enter)"
+                disabled={isChatting || generationProgress.isGenerating}
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />

@@ -76,9 +76,31 @@ export class BedrockClient {
     temperature?: number;
     topP?: number;
   }) {
-    const model = BEDROCK_MODELS[modelId];
+    // Try known models; if not present, infer sensible defaults based on modelId prefix
+    let model = BEDROCK_MODELS[modelId];
     if (!model) {
-      throw new Error(`Unsupported Bedrock model: ${modelId}`);
+      if (modelId.startsWith('anthropic.')) {
+        model = {
+          id: modelId,
+          name: modelId,
+          provider: 'Anthropic',
+          maxTokens: 200000,
+        };
+      } else if (modelId.startsWith('amazon.')) {
+        model = {
+          id: modelId,
+          name: modelId,
+          provider: 'Amazon',
+          maxTokens: 8000,
+        };
+      } else {
+        model = {
+          id: modelId,
+          name: modelId,
+          provider: 'Unknown',
+          maxTokens: 4000,
+        };
+      }
     }
 
     // Format messages for the specific model
