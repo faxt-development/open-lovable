@@ -162,8 +162,8 @@ export async function startDevServer(projectName: string): Promise<{success: boo
       throw new Error('package.json not found');
     }
     
-    // Start the dev server in background
-    const command = `npm run dev -- --port ${port} > dev-server.log 2>&1 &`;
+    // Start the dev server in background (use pnpm for consistency)
+    const command = `pnpm run dev -- --port ${port} > dev-server.log 2>&1 &`;
     await execAsync(command, { cwd: projectDir });
     
     return {

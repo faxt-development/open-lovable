@@ -1,42 +1,61 @@
+import React from 'react';
+
 const Testimonials = () => {
   const testimonials = [
     {
-      content: "Faxtoro has transformed how we manage our auto repair shop. Our scheduling efficiency improved by 40% and customer satisfaction ratings are at an all-time high.",
-      author: "Michael Rodriguez",
-      role: "Owner, Rodriguez Auto Care",
-      imageUrl: "https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=256&q=80",
+      id: 1,
+      name: 'Sarah Johnson',
+      role: 'CTO at TechFlow',
+      image: 'https://randomuser.me/api/portraits/women/32.jpg',
+      quote: 'Implementing this API has transformed our development workflow. Our team can now focus on building features instead of managing infrastructure.',
     },
     {
-      content: "The digital vehicle inspection feature alone has increased our average repair order by 15%. Customers trust us more when they can see photos and videos of the issues.",
-      author: "Sarah Johnson",
-      role: "Manager, Precision Auto Works",
-      imageUrl: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=256&q=80",
+      id: 2,
+      name: 'Michael Chen',
+      role: 'Lead Developer at StartupHub',
+      image: 'https://randomuser.me/api/portraits/men/46.jpg',
+      quote: 'The documentation is excellent and the support team responds quickly. We were able to integrate the API in just a few hours.',
     },
     {
-      content: "After trying three different shop management systems, Faxtoro is by far the most intuitive and comprehensive. Our team was up and running in just a few hours.",
-      author: "David Chen",
-      role: "Owner, Chen's European Auto",
-      imageUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=256&q=80",
-    },
+      id: 3,
+      name: 'Emily Rodriguez',
+      role: 'Product Manager at GrowthCo',
+      image: 'https://randomuser.me/api/portraits/women/65.jpg',
+      quote: 'This solution has helped us scale our application without worrying about backend infrastructure. Highly recommended!',
+    }
   ];
 
   return (
-    <div id="testimonials" className="bg-gray-50 py-24 sm:py-32">
-      <div className="mx-auto max-w-7xl px-6 lg:px-8">
-        <div className="mx-auto max-w-2xl lg:text-center">
-          <h2 className="text-base font-semibold leading-7 text-blue-600">Testimonials</h2>
-          <p className="mt-2 text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-            Trusted by auto repair shops nationwide
-          </p>
-          <p className="mt-6 text-lg leading-8 text-gray-600">
-            Hear from shop owners and managers who have transformed their businesses with Faxtoro.
+    <section id="testimonials" className="py-20 bg-gray-100">
+      <div className="container mx-auto px-4">
+        <div className="text-center mb-16">
+          <h2 className="text-4xl font-bold mb-4">What Our Customers Say</h2>
+          <p className="text-xl text-gray-600 max-w-2xl mx-auto">
+            Don't just take our word for it - hear from some of our satisfied customers
           </p>
         </div>
-        
-        <div className="mx-auto mt-16 grid max-w-2xl grid-cols-1 gap-8 lg:mx-0 lg:max-w-none lg:grid-cols-3">
-          {testimonials.map((testimonial, index) => (
-            <div key={index} className="flex flex-col justify-between bg-white p-8 shadow-sm rounded-xl border border-gray-100 hover:shadow-md transition-shadow duration-300">
-              <div>
-                <div className="flex items-center gap-x-2 mb-6">
-                  {[0, 1, 2, 3, 4].map((star) => (
-                    <svg key={star
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+          {testimonials.map((testimonial) => (
+            <div key={testimonial.id} className="bg-white p-8 rounded-lg shadow-lg">
+              <div className="flex items-center mb-4">
+                <img 
+                  src={testimonial.image} 
+                  alt={testimonial.name} 
+                  className="w-16 h-16 rounded-full mr-4 object-cover"
+                />
+                <div>
+                  <h4 className="font-bold text-lg">{testimonial.name}</h4>
+                  <p className="text-gray-600">{testimonial.role}</p>
+                </div>
+              </div>
+              <p className="text-gray-700 italic">"{testimonial.quote}"</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
+export default Testimonials;

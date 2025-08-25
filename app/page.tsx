@@ -2305,7 +2305,8 @@ Focus on the key sections and content, making it clean and modern while preservi
             projectId: projectData?.id,
             structure: structureContent,
             conversationContext: conversationContext
-          }
+          },
+          isEdit: conversationContext.appliedCode.length > 0
         })
       });
       
@@ -2663,7 +2664,8 @@ Focus on the key sections and content, making it clean and modern.`;
               projectName: projectData?.projectName ?? '',
               structure: structureContent,
               conversationContext: conversationContext
-            }
+            },
+            isEdit: conversationContext.appliedCode.length > 0
           })
         });
         
@@ -3253,9 +3255,9 @@ Focus on the key sections and content, making it clean and modern.`;
                   size="sm"
                   disabled={isScaffolding || !projectData}
                   onClick={scaffoldAndStartDevServer}
-                  title="Scaffold a Vite app in the project and start its dev server"
+                  title="Start the Vite dev server and scaffold the project with template code if needed"
                 >
-                  {isScaffolding ? 'Scaffolding…' : 'Scaffold & Start Dev Server'}
+                  {isScaffolding ? 'Scaffolding…' : 'Start Dev Server'}
                 </Button>
               )}
             </div>

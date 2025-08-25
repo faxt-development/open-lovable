@@ -54,15 +54,15 @@ export async function POST(request: NextRequest) {
       const scaffoldTarget = isEmpty ? projectName : tempName;
       const scaffoldDestDir = path.join(projectsRoot, scaffoldTarget);
 
-      // Use npm create vite to scaffold into the chosen target
-      const scaffoldCmd = `npm create vite@latest ${scaffoldTarget} -- --template ${template}`;
+      // Use pnpm create vite to scaffold into the chosen target
+      const scaffoldCmd = `pnpm create vite@latest ${scaffoldTarget} -- --template ${template}`;
       console.log('[scaffold-vite] Running scaffold command:', scaffoldCmd, 'cwd:', projectsRoot);
       const { stdout: scaffoldOut, stderr: scaffoldErr } = await execAsync(scaffoldCmd, { cwd: projectsRoot, maxBuffer: 1024 * 1024 * 50, timeout: 5 * 60 * 1000 });
       console.log('[scaffold-vite] Scaffold stdout (first 500 chars):', (scaffoldOut || '').slice(0, 500));
       if (scaffoldErr) console.warn('[scaffold-vite] Scaffold stderr (first 500 chars):', scaffoldErr.slice(0, 500));
       if (scaffoldErr) {
         // create-vite prints some info to stderr; treat only hard failures as errors
-        const hardError = /ERR|Error|failed/i.test(scaffoldErr) && !/npm notice/i.test(scaffoldErr);
+        const hardError = /ERR|Error|failed/i.test(scaffoldErr) && !/pnpm notice/i.test(scaffoldErr);
         if (hardError) {
           return NextResponse.json({ success: false, error: scaffoldErr }, { status: 500 });
         }
@@ -109,11 +109,62 @@ export async function POST(request: NextRequest) {
       }
 
       // Install dependencies in the project directory
-      const installCmd = 'npm install';
+      const installCmd = 'pnpm install';
       console.log('[scaffold-vite] Installing dependencies with:', installCmd, 'cwd:', projectDir);
       const { stdout: installOut, stderr: installErr } = await execAsync(installCmd, { cwd: projectDir, maxBuffer: 1024 * 1024 * 50, timeout: 10 * 60 * 1000 });
       console.log('[scaffold-vite] Install stdout (first 500 chars):', (installOut || '').slice(0, 500));
       if (installErr) console.warn('[scaffold-vite] Install stderr (first 500 chars):', installErr.slice(0, 500));
+
+      // Optional: Install and configure Tailwind CSS if not already present
+      try {
+        const devDepsInstallCmd = 'pnpm install -D tailwindcss @tailwindcss/postcss postcss autoprefixer';
+        console.log('[scaffold-vite] Installing Tailwind dev deps with:', devDepsInstallCmd, 'cwd:', projectDir);
+        const { stdout: devDepsOut, stderr: devDepsErr } = await execAsync(devDepsInstallCmd, { cwd: projectDir, maxBuffer: 1024 * 1024 * 50, timeout: 10 * 60 * 1000 });
+        console.log('[scaffold-vite] Tailwind deps install stdout (first 500 chars):', (devDepsOut || '').slice(0, 500));
+        if (devDepsErr) console.warn('[scaffold-vite] Tailwind deps install stderr (first 500 chars):', devDepsErr.slice(0, 500));
+
+        // Create Tailwind config if missing
+        const tailwindConfigPath = path.join(projectDir, 'tailwind.config.cjs');
+        if (!fs.existsSync(tailwindConfigPath)) {
+          const tailwindConfig = `module.exports = {\n  content: [\n    \"./index.html\",\n    \"./src/**/*.{js,jsx,ts,tsx}\"\n  ],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n`;
+          fs.writeFileSync(tailwindConfigPath, tailwindConfig);
+          console.log('[scaffold-vite] Created tailwind.config.cjs');
+        }
+
+        // Create PostCSS config if missing
+        const postcssConfigPath = path.join(projectDir, 'postcss.config.cjs');
+        if (!fs.existsSync(postcssConfigPath)) {
+          const postcssConfig = `module.exports = {\n  plugins: {\n    '@tailwindcss/postcss': {},\n    autoprefixer: {},\n  },\n};\n`;
+          fs.writeFileSync(postcssConfigPath, postcssConfig);
+          console.log('[scaffold-vite] Created postcss.config.cjs');
+        }
+
+        // Ensure index.css references Tailwind (v4 style preferred)
+        const indexCssPath = path.join(projectDir, 'src', 'index.css');
+        if (fs.existsSync(indexCssPath)) {
+          const css = fs.readFileSync(indexCssPath, 'utf8');
+          const hasV4Import = /@import\s+["']tailwindcss["'];?/.test(css);
+          const onlyV3Directives = /^\s*(?:@tailwind\s+(?:base|components|utilities);\s*)+$/m.test(css);
+
+          if (!hasV4Import) {
+            const baseLayer = `@layer base {\n  html, body, #root { height: 100%; }\n  body { @apply bg-white text-gray-900 antialiased; }\n}\n`;
+            if (onlyV3Directives) {
+              // Replace v3 directives-only file with v4 import and a small base layer
+              const newCss = `@import "tailwindcss";\n\n${baseLayer}`;
+              fs.writeFileSync(indexCssPath, newCss);
+              console.log('[scaffold-vite] Rewrote src/index.css to Tailwind v4 import with base layer');
+            } else {
+              // Prepend v4 import to preserve any custom styles already present
+              const newCss = `@import "tailwindcss";\n\n${css}`;
+              fs.writeFileSync(indexCssPath, newCss);
+              console.log('[scaffold-vite] Prepended Tailwind v4 import to src/index.css');
+            }
+          }
+        }
+      } catch (e) {
+        // Non-fatal: if Tailwind setup fails, continue with the rest
+        console.warn('[scaffold-vite] Tailwind setup skipped or failed:', e);
+      }
 
       // Ensure a dev script exists (Vite template should include it)
       try {

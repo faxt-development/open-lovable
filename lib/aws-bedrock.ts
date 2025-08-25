@@ -113,43 +113,115 @@ export class BedrockClient {
     // Decide what identifier to actually invoke with (prefer inference profile ARN if present)
     const invokeTarget = model.invokeId || model.id;
 
-    // Format messages for the specific model
-    const formattedMessages = this.formatMessagesForModel(invokeTarget, messages);
-
     // Debug provider resolution
     const detectedProvider = this.detectProvider(invokeTarget);
+
+    // Helper to conservatively truncate long text by characters
+    const truncate = (text: string, maxChars: number) => {
+      if (!text || text.length <= maxChars) return text;
+      return text.slice(-maxChars); // keep the tail which usually contains the user's latest details
+    };
+
+    // Trim messages for providers with tighter input limits (e.g., DeepSeek)
+    let effectiveMessages = messages;
+    if (detectedProvider === 'DeepSeek') {
+      const sys = messages.find(m => m.role === 'system');
+      const lastUser = messages.filter(m => m.role === 'user').slice(-1)[0];
+      if (lastUser) {
+        // Aggressively truncate last user message to a safe bound (e.g., 6k chars)
+        const SAFE_MAX = 6000;
+        const truncatedUser = {
+          ...lastUser,
+          content: truncate(lastUser.content, SAFE_MAX),
+        } as typeof lastUser;
+
+        effectiveMessages = sys ? [sys, truncatedUser] : [truncatedUser];
+        if (lastUser.content.length > SAFE_MAX) {
+          console.warn('[aws-bedrock] DeepSeek: user content truncated to', SAFE_MAX, 'chars to fit input limits');
+        } else {
+          console.log('[aws-bedrock] DeepSeek: trimmed messages to system + last user');
+        }
+      }
+    }
+
+    // Format messages for the specific model
+    const formattedMessages = this.formatMessagesForModel(invokeTarget, effectiveMessages);
     console.log('[aws-bedrock] Invoking provider:', detectedProvider, 'target:', invokeTarget);
 
-    const command = new InvokeModelWithResponseStreamCommand({
-      modelId: invokeTarget,
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify({
-        ...(detectedProvider === 'Anthropic' ? {
+    // Build initial request body per provider
+    const lastUserFromEffective = (effectiveMessages.filter(m => m.role === 'user').slice(-1)[0]?.content) || '';
+    const initialBody = (detectedProvider === 'Anthropic')
+      ? {
           anthropic_version: 'bedrock-2023-05-31',
           max_tokens: Math.min(maxTokens, model.maxTokens),
           messages: formattedMessages,
           temperature,
           top_p: topP,
-        } : detectedProvider === 'Amazon' ? {
-          inputText: messages[messages.length - 1].content,
+        }
+      : (detectedProvider === 'Amazon')
+      ? {
+          inputText: lastUserFromEffective,
           textGenerationConfig: {
             maxTokenCount: Math.min(maxTokens, model.maxTokens),
             temperature,
             topP,
           },
-        } : {
-          prompt: messages[messages.length - 1].content,
+        }
+      : (detectedProvider === 'DeepSeek')
+      ? {
+          messages: formattedMessages,
+          max_tokens: Math.min(maxTokens, model.maxTokens),
+          temperature,
+          top_p: topP,
+        }
+      : {
+          prompt: lastUserFromEffective,
           max_tokens_to_sample: Math.min(maxTokens, model.maxTokens),
           temperature,
           top_p: topP,
-        }),
-      }),
-    });
+        };
 
-    const response = await this.client.send(command);
+    const sendWithBody = async (body: any) => {
+      const cmd = new InvokeModelWithResponseStreamCommand({
+        modelId: invokeTarget,
+        contentType: 'application/json',
+        accept: 'application/json',
+        body: JSON.stringify(body),
+      });
+      return await this.client.send(cmd);
+    };
 
-    if (!response.body) {
+    let response: any;
+    try {
+      // Try the initial request body
+      response = await sendWithBody(initialBody);
+    } catch (err: any) {
+      // For DeepSeek specifically, retry with alternative shapes on validation errors
+      if (detectedProvider === 'DeepSeek' && (err?.name === 'ValidationException' || err?.$fault === 'client')) {
+        console.warn('[aws-bedrock] DeepSeek validation failed with initial body. Retrying with alternatives...');
+        const alternatives = [
+          // Alternative 1: input + flat params
+          { input: lastUserFromEffective, max_tokens: Math.min(maxTokens, model.maxTokens), temperature, top_p: topP },
+          // Alternative 2: prompt + flat params
+          { prompt: lastUserFromEffective, max_tokens: Math.min(maxTokens, model.maxTokens), temperature, top_p: topP },
+        ];
+        let success = false;
+        for (const alt of alternatives) {
+          try {
+            response = await sendWithBody(alt);
+            success = true;
+            break;
+          } catch (e) {
+            // try next
+          }
+        }
+        if (!success) throw err;
+      } else {
+        throw err;
+      }
+    }
+
+    if (!response || !response.body) {
       throw new Error('No response body from Bedrock');
     }
 
@@ -161,6 +233,21 @@ export class BedrockClient {
       if (detectedProvider === 'Anthropic') {
         if (payload.type === 'content_block_delta' && payload.delta?.text) {
           yield { text: payload.delta.text };
+        }
+      } else if (detectedProvider === 'DeepSeek') {
+        // Try to handle common DeepSeek streaming shapes on Bedrock
+        // Prefer delta-style content first
+        if (payload?.delta?.content) {
+          const text = Array.isArray(payload.delta.content)
+            ? payload.delta.content.map((c: any) => c?.text || '').join('')
+            : (payload.delta.content.text || payload.delta.content || '');
+          if (text) yield { text };
+        } else if (payload?.output_text) {
+          yield { text: payload.output_text };
+        } else if (payload?.completion) {
+          yield { text: payload.completion };
+        } else if (payload?.content?.[0]?.text) {
+          yield { text: payload.content[0].text };
         }
       } else if (detectedProvider === 'Amazon') {
         if (payload.outputText) {
@@ -185,6 +272,9 @@ export class BedrockClient {
           { type: 'text', text: msg.role === 'system' ? `System: ${msg.content}` : msg.content }
         ],
       }));
+    } else if (provider === 'DeepSeek') {
+      // DeepSeek expects OpenAI-style messages: [{ role, content }]
+      return messages.map(msg => ({ role: msg.role, content: msg.content }));
     }
     // For other models, just return the last user message
     return [messages[messages.length - 1]];
