@@ -133,6 +133,7 @@ export default function LocalDevelopmentPage() {
 
   // Feature flags
   const enableWebScrape = false; // Disable Firecrawl/scrape-based flow; start in chat mode
+  const enablePreviewIframe = true; // if false, Never embed the app inside an iframe
 
   // Minimal stub to satisfy references; backend APIs handle actual creation
   const createProject = async (_silent?: boolean): Promise<void> => {
@@ -146,6 +147,7 @@ export default function LocalDevelopmentPage() {
   const [projectDataState, setProjectDataState] = useState<any>(null);
   const [devServerStatus, setDevServerStatus] = useState<string>('Not started');
   const [devServerStatusOk, setDevServerStatusOk] = useState<boolean>(false);
+  const [isScaffolding, setIsScaffolding] = useState<boolean>(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['app', 'src', 'src/components']));
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [homeScreenFading, setHomeScreenFading] = useState(false);
@@ -252,11 +254,11 @@ export default function LocalDevelopmentPage() {
         const data = await response.json();
         
         if (data.success) {
-          // Set project data
+          // Set project data (point to Vite dev server, not this Next app)
           setProjectData({
             projectName,
-            port: 3000, // Default port for local development
-            url: `http://localhost:3000`,
+            port: 5173, // Vite default port
+            url: `http://localhost:5173`,
           });
           
           // Display file structure
@@ -474,6 +476,38 @@ export default function LocalDevelopmentPage() {
     }
   };
 
+  const scaffoldAndStartDevServer = async () => {
+    if (!projectData?.projectName || isScaffolding) return;
+    setIsScaffolding(true);
+    try {
+      addChatMessage('Scaffolding Vite app and starting dev server...', 'system');
+      const res = await fetch('/api/scaffold-vite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName: projectData.projectName, template: 'react' })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || 'Failed to scaffold/start dev server');
+      }
+      updateStatus('Dev server active', true);
+      addChatMessage('Vite app ready and dev server started.', 'system');
+      // Point iframe to the dev server
+      setTimeout(() => {
+        if (enablePreviewIframe && iframeRef.current) {
+          iframeRef.current.src = `http://localhost:5173`;
+        }
+      }, 500);
+    } catch (e: any) {
+      console.error('[scaffoldAndStartDevServer] Error:', e);
+      addChatMessage(`Failed to scaffold/start dev server: ${e.message}`, 'error');
+      updateStatus('Dev server not running', false);
+    } finally {
+      await checkDevServerStatus();
+      setIsScaffolding(false);
+    }
+  };
+
   const initializeLocalProject = async (projectName: string = 'default-project') => {
     console.log('[initializeLocalProject] Starting local project initialization...');
     setLoading(true);
@@ -489,11 +523,11 @@ export default function LocalDevelopmentPage() {
       console.log('[initializeLocalProject] Response data:', data);
       
       if (data.success) {
-        // Set project data
+        // Set project data (point to Vite dev server, not this Next app)
         const projectData = {
           projectName,
-          port: 3000, // Default port for local development
-          url: `http://localhost:3000`,
+          port: 5173, // Vite default port
+          url: `http://localhost:5173`,
         };
         
         setProjectData(projectData);
@@ -544,7 +578,7 @@ export default function LocalDevelopmentPage() {
         
         // Set up the preview iframe
         setTimeout(() => {
-          if (iframeRef.current) {
+          if (enablePreviewIframe && iframeRef.current) {
             iframeRef.current.src = projectData.url;
           }
         }, 1500);
@@ -756,8 +790,8 @@ export default function LocalDevelopmentPage() {
           if (projectData?.projectName && results.filesCreated.length > 0) {
             // Small delay to ensure files are written
             setTimeout(() => {
-              // Force refresh the iframe to show new files
-              if (iframeRef.current) {
+              // Force refresh the iframe to show new files (disabled when iframe preview is off)
+              if (enablePreviewIframe && iframeRef.current) {
                 iframeRef.current.src = iframeRef.current.src;
               }
             }, 1000);
@@ -883,7 +917,7 @@ export default function LocalDevelopmentPage() {
           const refreshDelay = appConfig.codeApplication.defaultRefreshDelay; // Allow Vite to process changes
           
           setTimeout(() => {
-            if (iframeRef.current && projectData?.url) {
+            if (enablePreviewIframe && iframeRef.current && projectData?.url) {
               console.log('[home] Refreshing iframe after code application...');
               
               // Method 1: Change src with timestamp
@@ -916,7 +950,7 @@ export default function LocalDevelopmentPage() {
             console.log(`[applyGeneratedCode] Packages installed: ${packagesInstalled}, refresh delay: ${refreshDelay}ms`);
             
             setTimeout(async () => {
-            if (iframeRef.current && projectData?.url) {
+            if (enablePreviewIframe && iframeRef.current && projectData?.url) {
               console.log('[applyGeneratedCode] Starting iframe refresh sequence...');
               console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current.src);
               console.log('[applyGeneratedCode] Project URL:', projectData.url);
@@ -1041,7 +1075,7 @@ export default function LocalDevelopmentPage() {
           
           // Refresh the iframe after a short delay
           setTimeout(() => {
-            if (iframeRef.current && projectData?.url) {
+            if (enablePreviewIframe && iframeRef.current && projectData?.url) {
               iframeRef.current.src = `${projectData.url}?t=${Date.now()}`;
             }
           }, 2000);
@@ -1509,8 +1543,8 @@ export default function LocalDevelopmentPage() {
         );
       }
       
-      // Show project iframe only when not in any loading state
-      if (projectData?.url && !loading) {
+      // Show project iframe only when not in any loading state and iframe preview is enabled
+      if (enablePreviewIframe && projectData?.url && !loading) {
         return (
           <div className="relative w-full h-full">
             <iframe
@@ -1537,6 +1571,25 @@ export default function LocalDevelopmentPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
             </button>
+          </div>
+        );
+      }
+
+      // If a project is available but iframe preview is disabled, show an external-open hint
+      if (!enablePreviewIframe && projectData?.url && !loading) {
+        return (
+          <div className="flex items-center justify-center h-full bg-gray-50">
+            <div className="text-center text-gray-700">
+              <p className="text-sm">Preview iframe is disabled. Open your app directly:</p>
+              <a
+                href={projectData.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block mt-2 text-blue-600 hover:underline"
+              >
+                {projectData.url}
+              </a>
+            </div>
           </div>
         );
       }
@@ -2252,7 +2305,8 @@ Focus on the key sections and content, making it clean and modern while preservi
             projectId: projectData?.id,
             structure: structureContent,
             conversationContext: conversationContext
-          }
+          },
+          isEdit: conversationContext.appliedCode.length > 0
         })
       });
       
@@ -2610,7 +2664,8 @@ Focus on the key sections and content, making it clean and modern.`;
               projectName: projectData?.projectName ?? '',
               structure: structureContent,
               conversationContext: conversationContext
-            }
+            },
+            isEdit: conversationContext.appliedCode.length > 0
           })
         });
         
@@ -3194,6 +3249,17 @@ Focus on the key sections and content, making it clean and modern.`;
             <div className="flex items-center gap-2 text-sm">
               <div className={`w-2 h-2 rounded-full ${devServerStatusOk ? 'bg-green-500' : 'bg-red-500'}`}></div>
               <div>{devServerStatus}</div>
+              {!devServerStatusOk && (
+                <Button
+                  variant="code"
+                  size="sm"
+                  disabled={isScaffolding || !projectData}
+                  onClick={scaffoldAndStartDevServer}
+                  title="Start the Vite dev server and scaffold the project with template code if needed"
+                >
+                  {isScaffolding ? 'Scaffolding…' : 'Start Dev Server'}
+                </Button>
+              )}
             </div>
           </div>
         </div>

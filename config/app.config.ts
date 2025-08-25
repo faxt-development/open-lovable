@@ -115,7 +115,7 @@ export const appConfig = {
   // Local Development Configuration
   localDev: {
     // Default development server port
-    defaultPort: 3000,
+    defaultPort: 5173,
     
     // Time to wait for dev server to be ready (in milliseconds)
     startupDelay: 7000,

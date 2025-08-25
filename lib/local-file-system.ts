@@ -153,7 +153,7 @@ export async function installPackages(projectName: string, packages: string[]): 
  */
 export async function startDevServer(projectName: string): Promise<{success: boolean; port: number; output: string}> {
   const projectDir = await ensureProjectDirectory(projectName);
-  const port = 3000; // You can make this dynamic if needed
+  const port = 5173; // Use Vite default port to avoid conflict with Next.js app on 3000
   
   try {
     // Check if package.json exists
@@ -162,8 +162,8 @@ export async function startDevServer(projectName: string): Promise<{success: boo
       throw new Error('package.json not found');
     }
     
-    // Start the dev server in background
-    const command = `npm run dev -- --port ${port} > dev-server.log 2>&1 &`;
+    // Start the dev server in background (use pnpm for consistency)
+    const command = `pnpm run dev -- --port ${port} > dev-server.log 2>&1 &`;
     await execAsync(command, { cwd: projectDir });
     
     return {
@@ -186,7 +186,7 @@ export async function startDevServer(projectName: string): Promise<{success: boo
 export async function stopDevServer(projectName: string): Promise<{success: boolean; output: string}> {
   try {
     // Find and kill the process running on the dev server port
-    const { stdout } = await execAsync(`lsof -i :3000 -t`);
+    const { stdout } = await execAsync(`lsof -i :5173 -t`);
     if (stdout.trim()) {
       await execAsync(`kill -9 ${stdout.trim()}`);
       return {
@@ -210,7 +210,7 @@ export async function stopDevServer(projectName: string): Promise<{success: bool
 /**
  * Check if development server is running on a given port
  */
-export async function isDevServerRunning(port: number = 3000): Promise<boolean> {
+export async function isDevServerRunning(port: number = 5173): Promise<boolean> {
   try {
     const { stdout } = await execAsync(`lsof -i :${port} -t`);
     return Boolean(stdout.trim());
